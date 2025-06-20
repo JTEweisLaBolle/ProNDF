@@ -3,6 +3,25 @@ Docstring to be added later.
 This module constains nn block classes.
 """
 
+# Block registry for storing different types of blocks
+
+BLOCK_REGISTRY = {}
+
+def register_block(name):
+    """
+    Decorator to register a block type with the given name.
+    
+    Args:
+        name (str): The name of the block type to register.
+    
+    Returns:
+        function: The decorator function that registers the block.
+    """
+    def decorator(cls):
+        BLOCK_REGISTRY[name] = cls
+        return cls
+    return decorator
+
 class Prob_Block(nn.Module):
     """
     TODO: UPDATE DOCSTRING AT LATER DATE

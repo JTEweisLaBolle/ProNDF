@@ -6,6 +6,25 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+# Loss registry for storing different types of losses
+
+LOSS_REGISTRY = {}
+
+def register_loss(name):
+    """
+    Decorator to register a loss type with the given name.
+    
+    Args:
+        name (str): The name of the loss type to register.
+    
+    Returns:
+        function: The decorator function that registers the loss.
+    """
+    def decorator(cls):
+        LOSS_REGISTRY[name] = cls
+        return cls
+    return decorator
+
 # loss functions
 
 class IS_loss(nn.Module):
