@@ -22,15 +22,21 @@ class ProNDF(pl.LightningModule):
     """
     def __init__(
         self,
-        dsource: list[int],
+        dsource: int,  # the number of sources
         dcat: list[int],
         dnum: int,
-        dy: list[int],
-        num_outputs: int,
-        num_sources: int,
-        # qual_in: bool,  # TODO: Delete these and instead check whether dims are 0 or None
-        # quant_in: bool,
-        # dz_B0: int = 2,
+        dy: int,
+        qual_in: bool,
+        quant_in: bool,
+        B1_type: str,
+        B1_params: dict[str, any],
+        B2_type: str,
+        B2_params: dict[str, any],
+        B3_type: str,
+        B3_params: dict[str, any],
+        Bias_type: str,
+        Bias_params: dict[str, any],
+        # dz_B0: int = 2,  # TODO: Pass things like this to a constructor instead of the model
         # dz_B1: int = 2,
         # architecture: dict[str, list[int]] = {  # TODO: Decide on whether we should include bias
         #     "Bias": [8, 4],  # TODO: Decide on whether we should allow the user to construct the architecture differently... Currently we're trying to make this as plug-and-play as possible, but that may not be the best approach
@@ -38,8 +44,8 @@ class ProNDF(pl.LightningModule):
         #     "B1": [8, 4],
         #     "B3": [16, 32, 16, 8],
         # },
-        var_init_bounds: list[float] = [-5.0, -3.0],  # TODO: Use an initializer object in the calibration version?
-        act_fn: nn.functional = nn.Tanh(),  # TODO: Should this be included in the architecture dict instead?
+        # var_init_bounds: list[float] = [-5.0, -3.0],  # TODO: Use an initializer object in the calibration version?
+        # act_fn: nn.functional = nn.Tanh(),  # TODO: Should this be included in the architecture dict instead?
         lr: float = 0.001,  # TODO: Should bundle all of the parameters associated with training into a trainer class instead of passing them here. Current setup constrains the model to be used only with regression. We want it to be usable on classification, etc. as well.
         k_L2: float = 0.01,
         k_KL: float = 0.01,
