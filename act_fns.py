@@ -3,8 +3,7 @@ This module contains activation function classes and a registry to store them.
 Additional or custom activation functions can be registered by the user if desired, 
 either in this file or inline.
 A registry system is used to enable serialization by PyTorch Lightning's checkpointing 
-system and automatic hyperparameter saving, as class objects are not diretly 
-serializable.
+system and automatic hyperparameter saving, as class objects can not be serialized.
 Example usage:
     # Importing and using the registry and adding a custom activation function
     from act_fns import ACT_FN_REGISTRY, register_act_fn
@@ -14,7 +13,7 @@ Example usage:
     class CustomActFn(nn.Module):
         def forward(self, x):
             return torch.sin(x)  # Example custom activation function
-To view inluded activation functions, use:
+To view registered activation functions, use:
     print(ACT_FN_REGISTRY.keys())
 """
 

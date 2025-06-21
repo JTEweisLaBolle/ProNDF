@@ -7,7 +7,6 @@ from torch import nn
 from torch.nn import functional as F
 
 # Loss registry for storing different types of losses
-
 LOSS_REGISTRY = {}
 
 def register_loss(name):
@@ -24,6 +23,7 @@ def register_loss(name):
         LOSS_REGISTRY[name] = cls
         return cls
     return decorator
+
 
 # loss functions
 
@@ -73,7 +73,27 @@ class MSE_loss(nn.Module):
     def forward(self, mu, y, var, sigma):
         loss = F.mse_loss(mu, y)
         return loss
+
+
+# Loss weighting algorithm registry
+LW_ALG_REGISTRY = {}
+
+def register_lw_alg(name):
+    """
+    Decorator to register a loss-weighting algorithm with the given name.
     
+    Args:
+        name (str): The name of the loss-weighting algorithm type to register.
+    
+    Returns:
+        function: The decorator function that registers the loss-weighting algorithm.
+    """
+    def decorator(cls):
+        LW_ALG_REGISTRY[name] = cls
+        return cls
+    return decorator
+
+
 # Loss weighting algoithms
 
 class Dymanic_Weights(nn.Module):

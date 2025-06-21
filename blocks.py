@@ -1,6 +1,23 @@
 """
-Docstring to be added later.
-This module constains nn block classes.
+This module contains model block classes and a registry to store them.
+Additional or custom blocks can be registered by the user if desired, either in this file or inline.
+A registry system is used to enable serialization by PyTorch Lightning's checkpointing 
+system and automatic hyperparameter saving, as class objects can not be serialized.
+Example usage:
+    # Importing and using the registry and adding a custom block
+    from blocks import BLOCK_REGISTRY, register_block
+
+    # Registering a custom block (inline or in this file)
+    @register_block("CustomBlock")
+    class CustomBlock(Base_Block):
+        def __init__(self, d_in, d_out):
+            super(CustomBlock, self).__init__()
+            self.fc = nn.Linear(d_in, d_out)
+        
+        def forward(self, x):
+            return self.fc(x)
+To view registered blocks, use:
+    print(BLOCK_REGISTRY.keys())
 """
 
 import torch
