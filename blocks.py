@@ -6,6 +6,7 @@ This module constains nn block classes.
 import torch
 from torch import nn
 from .act_fns import ACT_FN_REGISTRY
+from .utils import reparameterization_trick
 
 
 # Block registry for storing different types of blocks
@@ -186,27 +187,24 @@ class Prob_Block(Base_Block):
 
     def forward(self, x):
         """
-        Runs through network and returns distribution.
+        Runs through network and samples from output distribution with 
+        reparameterization trick.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, d_in).
+        """
+        temp = self.architecture(x)
+        mu, log_var = torch.chunk(temp, 2, dim=-1)
+        return reparameterization_trick(mu, log_var)
+
+    def predict_distribution(self, x):
+        """
+        Runs through network and provides predicted output distribution.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, d_in).
         """
         temp = self.architecture(x)
         mu, log_var = torch.chunk(temp, 2, dim=-1)
         sigma = torch.exp(0.5 * log_var)
         return torch.distributions.normal.Normal(mu, sigma)
-
-    def predict(self, x):
-        """
-        Provides mean prediction.
-        """
-        temp = self.architecture(x)
-        mu, log_var = torch.chunk(temp, 2, dim=-1)
-        return mu
-
-    def sample(self, x):
-        """
-        Samples once via reparameterization trick.
-        """
-        temp = self.architecture(x)
-        mu, log_var = torch.chunk(temp, 2, dim=-1)
-        return reparameterization_trick(mu, log_var)
     
 
