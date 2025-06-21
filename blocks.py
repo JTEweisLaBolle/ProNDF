@@ -3,8 +3,12 @@ Docstring to be added later.
 This module constains nn block classes.
 """
 
-# Block registry for storing different types of blocks
+import torch
+from torch import nn
+from .act_fns import ACT_FN_REGISTRY
 
+
+# Block registry for storing different types of blocks
 BLOCK_REGISTRY = {}
 
 def register_block(name):
@@ -22,35 +26,157 @@ def register_block(name):
         return cls
     return decorator
 
-class Prob_Block(nn.Module):
-    """
-    TODO: UPDATE DOCSTRING AT LATER DATE
-    Probabilistic block for neural network. Assumes input is a tensor of shape
-    """
 
+# Model blocks
+class Base_Block(nn.Module):
+    """
+    Base class for all blocks. Should not be instantiated directly.
+    """
+    def __init__(
+            self,
+            is_probabilistic: bool = False,
+            ):
+        super(Base_Block, self).__init__()
+        if type(self) is Base_Block:
+            raise NotImplementedError("Base_Block should not be instantiated directly.")
+        self.is_probabilistic = is_probabilistic
+    
+    def forward(self, x):
+        """
+        Runs through network and returns output predition.
+        """
+        raise NotImplementedError("Forward method should be implemented in subclasses.")
+    
+    def predict_distribution(self, x):
+        """
+        Provides output prediction distribution. Only used if model is probabilistic.
+        """
+        raise NotImplementedError("Predict distribution method should be implemented in subclasses.")
+        
+
+@register_block("Det_Block")
+class Det_Block(Base_Block):
+    """
+    A deterministic feed-forward neural network block.
+
+    Consists of an arbitrary number of hidden layers with identical activation 
+    functions save for the final output layer, whose activation function is specified by 
+    the user. Takes in a tensor of shape (batch_size, d_in) and outputs a single 
+    deterministic tensor of size d_out. Can be used for both regression and 
+    classification tasks depending on specified output activation.
+
+    Inherits from:
+        Base_Block
+    """
     def __init__(
         self,
         d_in: int,
         d_out: int,
         hidden_layers: list[int],
-        act_fn: nn.functional = nn.Tanh(),
-        num_realizations: int = 1,
+        hidden_act_fn: str = "Tanh",
+        output_act_fn: str = "Identity",
     ):
-        super(Prob_Block, self).__init__()
+        """
+        Initializes the Det_Block with the specified parameters.
+        Args:
+            d_in (int): Dimension of the input.
+            d_out (int): Dimension of the output.
+            hidden_layers (list[int]): List of integers specifying the number of neurons 
+                in each hidden layer.
+            hidden_act_fn (str): Activation function for hidden layers, selected from 
+                ACT_FN_REGISTRY. Defaults to "Tanh" (hyperbolic tangent).
+            output_act_fn (str): Activation function for the output layer, selected 
+                from ACT_FN_REGISTRY. Defaults to "Identity".
+        Raises:
+            KeyError: If the specified activation functions are not found in 
+                ACT_FN_REGISTRY.
+        """
+        super(Det_Block, self).__init__()
         # Store params
         self.d_in = d_in
         self.d_out = d_out
         self.hidden_layers = hidden_layers
-        self.act_fn = act_fn
-        self.num_realizations = num_realizations
+        self.hidden_act_fn = ACT_FN_REGISTRY[hidden_act_fn]()
+        self.output_act_fn = ACT_FN_REGISTRY[output_act_fn]()
         # Build architecture
         Block = []
         neurons_in = d_in
         for neurons in hidden_layers:
             Block.append(nn.Linear(neurons_in, neurons))
-            Block.append(act_fn)
+            Block.append(self.hidden_act_fn)
+            neurons_in = neurons
+        Block.append(nn.Linear(neurons_in, d_out))  # Deterministic output
+        Block.append(self.output_act_fn)
+        architecture = nn.Sequential(*Block)
+        for layer in architecture:  # Initialize via Xavier uniform
+            if isinstance(layer, nn.Linear):
+                torch.nn.initxavier_uniform_(layer.weight)
+                torch.nn.initzeros_(layer.bias)  # Initialize biases to zero
+        self.architecture = architecture
+
+    def forward(self, x):
+        """
+        Runs through network and returns output.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, d_in).
+        """
+        temp = self.architecture(x)
+        return temp
+
+
+@register_block("Prob_Block")
+class Prob_Block(Base_Block):
+    """
+    A probabilistic feed-forward neural network block.
+
+    Consists of an arbitrary number of hidden layers with identical activation 
+    functions save for the final output layer, whose activation function is specified by 
+    the user. Takes in a tensor of shape (batch_size, d_in) and outputs a tensor of size 
+    2*d_out representing parameters of a Gaussian distribution (mean and variance). 
+    Should be used only for regression tasks.
+
+    Inherits from:
+        Base_Block
+    """
+    def __init__(
+        self,
+        d_in: int,
+        d_out: int,
+        hidden_layers: list[int],
+        hidden_act_fn: str = "Tanh",
+        output_act_fn: str = "Identity",
+    ):
+        """
+        Initializes the Prob_Block with the specified parameters.
+        Args:
+            d_in (int): Dimension of the input.
+            d_out (int): Dimension of the output.
+            hidden_layers (list[int]): List of integers specifying the number of neurons 
+                in each hidden layer.
+            hidden_act_fn (str): Activation function for hidden layers, selected from 
+                ACT_FN_REGISTRY. Defaults to "Tanh" (hyperbolic tangent).
+            output_act_fn (str): Activation function for the output layer, selected 
+                from ACT_FN_REGISTRY. Defaults to "Identity".
+        Raises:
+            KeyError: If the specified activation functions are not found in 
+                ACT_FN_REGISTRY.
+        """
+        super(Prob_Block, self).__init__()
+        # Store params
+        self.d_in = d_in
+        self.d_out = d_out
+        self.hidden_layers = hidden_layers
+        self.hidden_act_fn = ACT_FN_REGISTRY[hidden_act_fn]()
+        self.output_act_fn = ACT_FN_REGISTRY[output_act_fn]()
+        # Build architecture
+        Block = []
+        neurons_in = d_in
+        for neurons in hidden_layers:
+            Block.append(nn.Linear(neurons_in, neurons))
+            Block.append(self.hidden_act_fn)
             neurons_in = neurons
         Block.append(nn.Linear(neurons_in, 2 * d_out))  # Probabilistic output
+        Block.append(self.output_act_fn)
         architecture = nn.Sequential(*Block)
         for layer in architecture:  # Initialize via Xavier uniform
             if isinstance(layer, nn.Linear):
@@ -84,57 +210,3 @@ class Prob_Block(nn.Module):
         return reparameterization_trick(mu, log_var)
     
 
-class Det_Block(nn.Module):
-    """
-    TODO: Remove realizations (never helped anyways)
-    Deterministic model block
-    """
-
-    def __init__(
-        self,
-        d_in: int,
-        d_out: int,
-        hidden_layers: list[int],
-        act_fn: nn.functional = nn.Tanh(),
-        num_realizations: int = 1,
-    ):
-        super(Det_Block, self).__init__()
-        # Store params
-        self.d_in = d_in
-        self.d_out = d_out
-        self.hidden_layers = hidden_layers
-        self.act_fn = act_fn
-        self.num_realizations = num_realizations
-        # Build architecture
-        Block = []
-        neurons_in = d_in
-        for neurons in hidden_layers:
-            Block.append(nn.Linear(neurons_in, neurons))
-            Block.append(act_fn)
-            neurons_in = neurons
-        Block.append(nn.Linear(neurons_in, d_out))  # Deterministic output
-        architecture = nn.Sequential(*Block)
-        for layer in architecture:  # Initialize via Xavier uniform
-            if isinstance(layer, nn.Linear):
-                torch.nn.initxavier_uniform_(layer.weight)
-                torch.nn.initzeros_(layer.bias)  # Initialize biases to zero
-        self.architecture = architecture
-
-    def forward(self, x):
-        """
-        Runs through network and returns distribution.
-        """
-        temp = self.architecture(x)
-        return temp
-
-    def predict(self, x):
-        """
-        Provides mean prediction.
-        """
-        return self(x)
-
-    def sample(self, x):
-        """
-        Samples once via reparameterization trick.
-        """
-        return self(x)

@@ -18,11 +18,10 @@ To view inluded activation functions, use:
     print(ACT_FN_REGISTRY.keys())
 """
 
-import torch
 from torch import nn
 
-# Activation function registry for storing different types of activation functions
 
+# Activation function registry for storing different types of activation functions
 ACT_FN_REGISTRY = {}
 
 def register_act_fn(name):
@@ -40,25 +39,31 @@ def register_act_fn(name):
         return cls
     return decorator
 
-@register_act_fn("Linear")
-class Linear(nn.Linear):
+
+@register_act_fn("Identity")
+class Linear(nn.Identity):
     pass
+
 
 @register_act_fn("Tanh")
 class Tanh(nn.Tanh):
     pass
 
+
 @register_act_fn("ReLU")
 class ReLU(nn.ReLU):
     pass
+
 
 @register_act_fn("Sigmoid")
 class Sigmoid(nn.Sigmoid):
     pass
 
+
 @register_act_fn("LeakyReLU")
 class LeakyReLU(nn.LeakyReLU):
     pass
+
 
 @register_act_fn("Softmax")
 class Softmax(nn.Softmax):
