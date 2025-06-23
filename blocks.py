@@ -1,7 +1,8 @@
 """
+blocks.py
 This module contains model block classes and a registry to store them.
 Additional or custom blocks can be registered by the user if desired, either in this file or inline.
-A registry system is used to enable serialization by PyTorch Lightning's checkpointing 
+Registries are used to enable serialization by PyTorch Lightning's checkpointing 
 system and automatic hyperparameter saving, as class objects can not be serialized.
 Example usage:
     # Importing and using the registry and adding a custom block

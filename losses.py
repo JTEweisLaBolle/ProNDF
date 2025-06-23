@@ -1,5 +1,23 @@
 """
-docstring: fill in later
+losses.py
+This module contains classes for losses, loss-weighting algorithms, and loss 
+computations, as well as registries to store them.
+Additional or custom losses and algorithms can be registered by the user if desired, 
+either in this file or inline.
+Registries are used to enable serialization by PyTorch Lightning's checkpointing 
+system and automatic hyperparameter saving, as class objects can not be serialized.
+Example usage:
+    # Importing and using the registry and adding a custom loss
+    from losses import LOSS_REGISTRY, register_loss
+
+    # Registering a custom loss (inline or in this file)
+    @register_loss("CustomLoss")
+    class CustomLoss(nn.Module):
+        def __init__(self):
+            super(CustomLoss, self).__init__()
+            # Register any buffers or parameters if needed
+        def forward(self, mu, y, var, sigma):
+            return torch.mean((mu - y) ** 2)  # Example custom loss function
 """
 
 import torch
@@ -26,13 +44,18 @@ def register_loss(name):
 
 
 # loss functions
-
+@register_loss("IS_loss")
 class IS_loss(nn.Module):
     """
     Interval score loss. Assumes 95% CI. Requires network output to be dist. object.
     """
 
     def __init__(self, alpha=0.05):
+        """
+        Initializes the IS_loss with a significance level for the interval score.
+        Args:
+            alpha (float): Significance level for the interval score, default is 0.05.
+        """
         super(IS_loss, self).__init__()
         self.register_buffer("alpha", torch.tensor(alpha))
 
@@ -49,19 +72,51 @@ class IS_loss(nn.Module):
         return loss
 
 
+@register_loss("NLL_loss")
 class NLL_loss(nn.Module):
     """
-    Interval score loss. Assumes 95% CI. Requires network output to be dist. object.
+    Negative log likelihood loss. Requires network output to be dist. object.
     """
 
     def __init__(self):
+        """
+        Initializes the NLL_loss.
+        Args:
+            None
+        """
         super(NLL_loss, self).__init__()
 
     def forward(self, mu, y, var, sigma):
         loss = F.gaussian_nll_loss(mu, y, var, full=True, eps=1e-6) + 6
         return loss
+    
+@register_loss("NLL_IS_loss")
+class NLL_IS_loss(nn.Module):
+    """
+    Negative log-likelihood loss with interval score. Assumes 95% CI.
+    Requires network output to be dist. object.
+    """
 
+    def __init__(self, NLL_weight = 0.5, IS_weight = 0.5, alpha=0.05):
+        """
+        Initializes the NLL_IS_loss with weights for NLL and IS loss.
+        Args:
+            weights (list): Weights for NLL and IS loss, respectively.
+            alpha (float): Significance level for the interval score.
+        """
+        super(NLL_IS_loss, self).__init__()
+        self.register_buffer("NLL_weight", torch.tensor(NLL_weight))
+        self.register_buffer("IS_weight", torch.tensor(IS_weight))
+        self.register_buffer("alpha", torch.tensor(alpha))
+        self.NLL_loss = NLL_loss()
+        self.IS_loss = IS_loss(alpha=alpha)
 
+    def forward(self, mu, y, var, sigma):
+        nll_loss = self.NLL_weight * self.NLL_loss(mu, y, var, sigma)
+        is_loss = self.IS_weight * self.IS_loss(mu, y, var, sigma)
+        return nll_loss + is_loss
+
+@register_loss("MSE_loss")
 class MSE_loss(nn.Module):
     """
     MSE loss. Works with either dist. object or raw tensor output.
@@ -74,6 +129,58 @@ class MSE_loss(nn.Module):
         loss = F.mse_loss(mu, y)
         return loss
 
+# Loss splitting registry
+LOSS_SPLIT_REGISTRY = {}
+def register_loss_split(name):
+    """
+    Decorator to register a loss splitting function with the given name.
+    
+    Args:
+        name (str): The name of the loss splitting function to register.
+    
+    Returns:
+        function: The decorator function that registers the loss splitting function.
+    """
+    def decorator(cls):
+        LOSS_SPLIT_REGISTRY[name] = cls
+        return cls
+    return decorator
+
+# loss splitting classes
+class Base_Loss_split(nn.Module):
+    """
+    Base class for loss splitting. Should not be instantiated directly.
+    """
+    def __init__(self):
+        super(Base_Loss_split, self).__init__()
+        if type(self) is Base_Loss_split:
+            raise NotImplementedError("Base_Loss_split should not be instantiated directly.")
+
+    def forward(self, ):
+        """
+        Splits losses into individual components. Define in subclasses.
+        """
+        raise NotImplementedError("Forward method should be implemented in subclasses.")
+    
+
+@register_loss_split("Split_by_source")
+class Split_by_source(nn.Module):
+    """
+    Splits losses by source. Assumes losses are in the form of a list of tensors.
+    """
+
+    def __init__(self):
+        super(Split_by_source, self).__init__()
+
+    def forward(self, losses):
+        """
+        Splits losses by source.
+        Args:
+            losses (list): List of loss tensors to be split.
+        Returns:
+            list: List of loss tensors split by source.
+        """
+        return [losses[i] for i in range(len(losses))]
 
 # Loss weighting algorithm registry
 LW_ALG_REGISTRY = {}
@@ -95,8 +202,34 @@ def register_lw_alg(name):
 
 
 # Loss weighting algoithms
+class Base_LW_alg(nn.Module):
+    """
+    Base class for loss weighting algorithms. Should not be instantiated directly.
+    """
+    def __init__(self):
+        super(Base_LW_alg, self).__init__()
+        if type(self) is Base_LW_alg:
+            raise NotImplementedError("Base_LW_alg should not be instantiated directly.")
 
-class Dymanic_Weights(nn.Module):
+    def forward(self, losses):
+        """
+        Linear combination of loss terms. Define in subclasses.
+        """
+        raise NotImplementedError("Forward method should be implemented in subclasses.")
+
+    def update(self, losses, parameters, step):
+        """
+        Updates the loss weights.
+        Inputs:
+            losses: Flattened tensor of losses to be weighted
+            parameters: Network params (e.g., model.parameters)
+            step: Global step for bias correction (e.g., model.global_step)
+        """
+        raise NotImplementedError("Update method should be implemented in subclasses.")
+
+
+@register_lw_alg("Dynamic_Weights")
+class Dymanic_Weights(Base_LW_alg):
     """
     TODO: UPDATE DOCSTRING AT LATER DATE
     """
@@ -172,7 +305,8 @@ class Dymanic_Weights(nn.Module):
                 self.gammas[idx] = gamma_mavg
 
 
-class Fixed_Weights(nn.Module):
+@register_lw_alg("Linear_Sum")
+class Linear_Sum(Base_LW_alg):
     """
     TODO: UPDATE DOCSTRING AT LATER DATE
     """
@@ -181,7 +315,7 @@ class Fixed_Weights(nn.Module):
         """
         TODO: Add docstring for __init__, remove extraneous inputs
         """
-        super(Fixed_Weights, self).__init__()
+        super(Linear_Sum, self).__init__()
         shape = (num_loss_terms,)
         self.register_buffer("lambdas", torch.zeros(shape))
         self.register_buffer("gammas", torch.zeros(shape))
@@ -204,7 +338,8 @@ class Fixed_Weights(nn.Module):
         pass
 
 
-class No_Weights(nn.Module):
+@register_lw_alg("No_Weights")
+class No_Weights(Base_LW_alg):
     """
     TODO: UPDATE DOCSTRING AT LATER DATE
     This class is used when no loss weighting is desired.
@@ -212,3 +347,21 @@ class No_Weights(nn.Module):
     # TODO: Implement
     pass
 
+
+# Loss computation registry
+LOSS_COMP_REGISTRY = {}
+
+def register_loss_comp(name):
+    """
+    Decorator to register a loss computation with the given name.
+    
+    Args:
+        name (str): The name of the loss computation type to register.
+    
+    Returns:
+        function: The decorator function that registers the loss computation.
+    """
+    def decorator(cls):
+        LOSS_COMP_REGISTRY[name] = cls
+        return cls
+    return decorator
