@@ -129,58 +129,89 @@ class MSE_loss(nn.Module):
         loss = F.mse_loss(mu, y)
         return loss
 
-# Loss splitting registry
-LOSS_SPLIT_REGISTRY = {}
-def register_loss_split(name):
+# Data splitting registry
+DATA_SPLIT_REGISTRY = {}
+def register_data_split(name):
     """
-    Decorator to register a loss splitting function with the given name.
+    Decorator to register a data splitting function with the given name.
     
     Args:
-        name (str): The name of the loss splitting function to register.
+        name (str): The name of the data splitting function to register.
     
     Returns:
-        function: The decorator function that registers the loss splitting function.
+        function: The decorator function that registers the data splitting function.
     """
     def decorator(cls):
-        LOSS_SPLIT_REGISTRY[name] = cls
+        DATA_SPLIT_REGISTRY[name] = cls
         return cls
     return decorator
 
-# loss splitting classes
-class Base_Loss_split(nn.Module):
+# data splitting classes
+class Base_Data_Split(nn.Module):
     """
-    Base class for loss splitting. Should not be instantiated directly.
+    Base class for data splitting. Should not be instantiated directly.
     """
     def __init__(self):
-        super(Base_Loss_split, self).__init__()
-        if type(self) is Base_Loss_split:
-            raise NotImplementedError("Base_Loss_split should not be instantiated directly.")
+        super(Base_Data_Split, self).__init__()
+        if type(self) is Base_Data_Split:
+            raise NotImplementedError(
+                "Base_Data_Split should not be instantiated directly."
+                )
 
-    def forward(self, ):
+    def forward(self, source, cat, num, y):
         """
-        Splits losses into individual components. Define in subclasses.
+        Splits data into individual components. Define in subclasses.
+        Args:
+            source (torch.Tensor): Source data tensor.
+            cat (torch.Tensor): Categorical data tensor.
+            num (torch.Tensor): Numerical data tensor.
+            y (torch.Tensor): Target data tensor.
         """
         raise NotImplementedError("Forward method should be implemented in subclasses.")
     
 
-@register_loss_split("Split_by_source")
-class Split_by_source(nn.Module):
+@register_data_split("No_Split")
+class No_Split(Base_Data_Split):
     """
-    Splits losses by source. Assumes losses are in the form of a list of tensors.
+    Performs no data splitting. Returns the input data as is.
     """
-
     def __init__(self):
-        super(Split_by_source, self).__init__()
+        super(No_Split, self).__init__()
 
-    def forward(self, losses):
+    def forward(self, source, cat, num, y):
         """
-        Splits losses by source.
+        Returns the input data as is without any splitting.
+        Args:
+            source (torch.Tensor): Source data tensor.
+            cat (torch.Tensor): Categorical data tensor.
+            num (torch.Tensor): Numerical data tensor.
+            y (torch.Tensor): Target data tensor.
+        Returns:
+            out: List containing tuple of the input tensors unmodified.
+        """
+        out = [(source, cat, num, y)]
+        return out
+
+
+@register_data_split("Split_by_Source")
+class Split_by_Source(Base_Data_Split):
+    """
+    Splits data by source.
+    """
+
+    def __init__(self, num_sources):
+        super(Split_by_Source, self).__init__()
+        self.register_buffer("num_sources", torch.tensor(num_sources))
+
+    def forward(self, source, cat, num, y):
+        """
+        Splits data by source.
         Args:
             losses (list): List of loss tensors to be split.
         Returns:
             list: List of loss tensors split by source.
         """
-        return [losses[i] for i in range(len(losses))]
+        return None
 
 # Loss weighting algorithm registry
 LW_ALG_REGISTRY = {}
@@ -209,7 +240,9 @@ class Base_LW_alg(nn.Module):
     def __init__(self):
         super(Base_LW_alg, self).__init__()
         if type(self) is Base_LW_alg:
-            raise NotImplementedError("Base_LW_alg should not be instantiated directly.")
+            raise NotImplementedError(
+                "Base_LW_alg should not be instantiated directly."
+                )
 
     def forward(self, losses):
         """
@@ -228,15 +261,25 @@ class Base_LW_alg(nn.Module):
         raise NotImplementedError("Update method should be implemented in subclasses.")
 
 
-@register_lw_alg("Dynamic_Weights")
-class Dymanic_Weights(Base_LW_alg):
+@register_lw_alg("No_Weights")
+class No_Weights(Base_LW_alg):
+    """
+    TODO: UPDATE DOCSTRING AT LATER DATE
+    This class is used when no loss weighting is desired.
+    """
+    # TODO: Implement
+    pass
+
+
+@register_lw_alg("Multi_Moment_Weighting")
+class Multi_Moment_Weighting(Base_LW_alg):
     """
     TODO: UPDATE DOCSTRING AT LATER DATE
     """
 
     def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):
         """TODO: Add docstring for __init__"""
-        super(Dymanic_Weights, self).__init__()
+        super(Multi_Moment_Weighting, self).__init__()
         shape = (num_loss_terms,)
         self.register_buffer("lambdas", torch.zeros(shape))
         self.register_buffer("gammas", torch.zeros(shape))
@@ -305,17 +348,17 @@ class Dymanic_Weights(Base_LW_alg):
                 self.gammas[idx] = gamma_mavg
 
 
-@register_lw_alg("Linear_Sum")
-class Linear_Sum(Base_LW_alg):
+@register_lw_alg("Fixed_Weights")
+class Fixed_Weights(Base_LW_alg):
     """
     TODO: UPDATE DOCSTRING AT LATER DATE
     """
 
-    def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):
+    def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):  # TODO: Add optional input to specify the fixed weight strengths
         """
         TODO: Add docstring for __init__, remove extraneous inputs
         """
-        super(Linear_Sum, self).__init__()
+        super(Fixed_Weights, self).__init__()
         shape = (num_loss_terms,)
         self.register_buffer("lambdas", torch.zeros(shape))
         self.register_buffer("gammas", torch.zeros(shape))
@@ -336,16 +379,6 @@ class Linear_Sum(Base_LW_alg):
         No updates are required for multi-task
         """
         pass
-
-
-@register_lw_alg("No_Weights")
-class No_Weights(Base_LW_alg):
-    """
-    TODO: UPDATE DOCSTRING AT LATER DATE
-    This class is used when no loss weighting is desired.
-    """
-    # TODO: Implement
-    pass
 
 
 # Loss computation registry
