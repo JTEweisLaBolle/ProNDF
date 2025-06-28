@@ -94,7 +94,10 @@ class NLL_loss(nn.Module):
 class NLL_IS_loss(nn.Module):
     """
     Negative log-likelihood loss with interval score. Assumes 95% CI.
+    This is a weighted sum of NLL_loss and IS_loss.
     Requires network output to be dist. object.
+    Typicaly not used - instead, IS is used as a regularizer with its own weight.
+    
     """
 
     def __init__(self, NLL_weight = 0.5, IS_weight = 0.5, alpha=0.05):
@@ -196,22 +199,48 @@ class No_Split(Base_Data_Split):
 @register_data_split("Split_by_Source")
 class Split_by_Source(Base_Data_Split):
     """
-    Splits data by source.
+    Splits data by source. Assumes source is one-hot encoded.
     """
-
-    def __init__(self, num_sources):
+    def __init__(self, config: dict[any, any] = None):
+        """
+        Initializes the Split_by_Source with the number of sources.
+        Args:
+            config (dict): Config object. Should contain 'num_sources' key.
+        """
         super(Split_by_Source, self).__init__()
-        self.register_buffer("num_sources", torch.tensor(num_sources))
-
+        if config is not None and "num_sources" in config:
+            self.register_buffer("num_sources", torch.tensor(config["num_sources"]))
+        else:
+            pass  # num_sources will be set in forward method
+        
     def forward(self, source, cat, num, y):
         """
-        Splits data by source.
+        Splits data by source. Assumes source is one-hot encoded.
         Args:
-            losses (list): List of loss tensors to be split.
+            source (torch.Tensor): Source data tensor, one-hot encoded.
+            cat (torch.Tensor): Categorical data tensor.
+            num (torch.Tensor): Numerical data tensor.
+            y (torch.Tensor): Target data tensor.
         Returns:
-            list: List of loss tensors split by source.
+            Out: List of loss tensors split by source.
         """
-        return None
+        if not hasattr(self, "num_sources"):
+            # If num_sources is not set, determine it from the source tensor
+            self.register_buffer(
+                "num_sources", torch.tensor(source.shape[-1]), device=source.device
+                )
+        out = []
+        for ds in range(self.num_sources.item()):
+            # Get indices for the current source
+            source_mask = source[:, ds] == 1
+            # Split data by source
+            source_split = source[source_mask, :]
+            cat_split = cat[source_mask, :]
+            num_split = num[source_mask, :]
+            y_split = y[source_mask, :]
+            out.append((source_split, cat_split, num_split, y_split))
+        return out
+
 
 # Loss weighting algorithm registry
 LW_ALG_REGISTRY = {}
@@ -235,7 +264,10 @@ def register_lw_alg(name):
 # Loss weighting algoithms
 class Base_LW_alg(nn.Module):
     """
-    Base class for loss weighting algorithms. Should not be instantiated directly.
+    Base class for loss weighting algorithms.
+    Do not instantiate directly. Subclasses should implement the `forward()` method 
+    to compute a weighted sum of loss terms, and optionally `update()` for dynamic 
+    schemes.
     """
     def __init__(self):
         super(Base_LW_alg, self).__init__()
@@ -243,43 +275,109 @@ class Base_LW_alg(nn.Module):
             raise NotImplementedError(
                 "Base_LW_alg should not be instantiated directly."
                 )
+    
+    def forward(self, losses: list[torch.Tensor]) -> torch.Tensor:
+        """
+        Linear combination of loss terms. Define in subclasses.
+        Args:
+            losses (list[torch.Tensor]): List of loss tensors to be weighted.
+        Returns:
+            torch.Tensor: Scalar weighted sum of losses.
+        """
+        raise NotImplementedError("Forward method should be implemented in subclasses.")
+    
+    class Context:
+        """
+        Context object for loss weighting algorithms. Extracts necessary information 
+        for updating weights from the losses, model, and optimizer.
+        Define methods as necessary.
+
+        """
+        def __init__(self, losses, model, optimizer):
+            """
+            Initializes the context with losses, parameters, and step.
+            Args:
+                losses (list[torch.Tensor]): List of loss tensors to be weighted.
+                model: Model from which to extract information (e.g., model.parameters).
+                optimizer: Model optimizer from which to extract information.
+            """
+            raise NotImplementedError(
+                "Context should be defined in a subclass of Base_LW_alg"
+            )
+    
+    def build_context(self, losses, model, optimizer):
+        """
+        Builds a context object for the loss weighting algorithm.
+        Args:
+            losses (list[torch.Tensor]): List of loss tensors to be weighted.
+            model: Model from which to extract information (e.g., model.parameters).
+            optimizer: Model optimizer from which to extract information.
+        Returns:
+            Context: Context object containing necessary information for updating weights.
+        """
+        return self.Context(losses, model, optimizer)
+
+    def update(self, context):
+        """
+        Optionally update the loss weights.
+        Override in subclasses when loss weights need to be dynamically updated.
+        Args:
+            context: Context object containing necessary information for updating 
+            weights.
+        """
+        pass
+
+
+@register_lw_alg("No_Weighting")
+class No_Weighting(Base_LW_alg):
+    """
+    This class is used when no loss weighting is desired.
+    """
+    def __init__(self):
+        """
+        Initializes the No_Weighting loss weighting algorithm which does not apply any 
+        weighting to the loss and simply returns it as is.
+        """
+        super(No_Weighting, self).__init__()
+        pass  # No parameters to register
 
     def forward(self, losses):
         """
-        Linear combination of loss terms. Define in subclasses.
+        Applies loss weights to loss terms and sums them.
+        Args:
+            losses (torch.Tensor): Flattened tensor of losses. Should be scalar or 1D 
+            if using no weighting.
+        Returns:
+            torch.Tensor: Sum of losses.
         """
-        raise NotImplementedError("Forward method should be implemented in subclasses.")
-
-    def update(self, losses, parameters, step):
-        """
-        Updates the loss weights.
-        Inputs:
-            losses: Flattened tensor of losses to be weighted
-            parameters: Network params (e.g., model.parameters)
-            step: Global step for bias correction (e.g., model.global_step)
-        """
-        raise NotImplementedError("Update method should be implemented in subclasses.")
+        return torch.sum(losses)
 
 
-@register_lw_alg("No_Weights")
-class No_Weights(Base_LW_alg):
+@register_lw_alg("Two_Moment_Weighting")
+class Two_Moment_Weighting(Base_LW_alg):
     """
-    TODO: UPDATE DOCSTRING AT LATER DATE
-    This class is used when no loss weighting is desired.
-    """
-    # TODO: Implement
-    pass
-
-
-@register_lw_alg("Multi_Moment_Weighting")
-class Multi_Moment_Weighting(Base_LW_alg):
-    """
-    TODO: UPDATE DOCSTRING AT LATER DATE
+    Loss weighting algorithm that uses two moment estimates to weight losses.
+    This algorithm computes the first and second moments of the gradients of each loss
+    term with respect to the model parameters, and uses these moments to compute
+    adaptive weights for each loss term. The reference loss term is used to normalize
+    the weights of the other loss terms.
+    The algorithm is inspired by the papers "Multi-Objective Loss Balancing for 
+    Physics-Informed Deep Learning" by Rafael Bischof and Michael Kraus (2021) and 
+    "Adam: A method for stochastic optimization" by Diederik P Kingm and Jimmy Ba 
+    (2014).
     """
 
     def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):
-        """TODO: Add docstring for __init__"""
-        super(Multi_Moment_Weighting, self).__init__()
+        """
+        Initializes the Two_Moment_Weighting loss weighting algorithm.
+        Args:
+            num_loss_terms (int): Number of loss terms to weight.
+            ref_idx (int): Index of the reference loss term.
+            alpha1 (float): Exponential decay rate for first moment.
+            alpha2 (float): Exponential decay rate for second moment.
+            eps (float): Small value to avoid division by zero.
+        """
+        super(Two_Moment_Weighting, self).__init__()
         shape = (num_loss_terms,)
         self.register_buffer("lambdas", torch.zeros(shape))
         self.register_buffer("gammas", torch.zeros(shape))
@@ -292,13 +390,15 @@ class Multi_Moment_Weighting(Base_LW_alg):
     def forward(self, losses):
         """
         Applies loss weights to loss terms and sums them.
+        Args:
+            losses (torch.Tensor): Flattened tensor of losses. Should be scalar or 1D
         """
         return torch.sum(losses * self.weights)
 
     def update(self, losses, parameters, step):
         """
         Updates the loss weights.
-        Inputs:
+        Args:
             losses: Flattened tensor of losses to be weighted
             parameters: Network params (e.g., model.parameters)
             step: Global step for bias correction (e.g., model.global_step)
@@ -348,37 +448,60 @@ class Multi_Moment_Weighting(Base_LW_alg):
                 self.gammas[idx] = gamma_mavg
 
 
-@register_lw_alg("Fixed_Weights")
-class Fixed_Weights(Base_LW_alg):
-    """
-    TODO: UPDATE DOCSTRING AT LATER DATE
-    """
-
-    def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):  # TODO: Add optional input to specify the fixed weight strengths
+# TODO: Add gradnorm as a class here
+@register_lw_alg("GradNorm")
+class GradNorm(Base_LW_alg):
+    """TODO: IMPLEMENT. UPDATE DOCSTRING AT LATER DATE."""
+    def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):
         """
-        TODO: Add docstring for __init__, remove extraneous inputs
+        Initializes the GradNorm loss weighting algorithm.
+        Args:
+            num_loss_terms (int): Number of loss terms to weight.
+            ref_idx (int): Index of the reference loss term.
+            alpha1 (float): Exponential decay rate for first moment.
+            alpha2 (float): Exponential decay rate for second moment.
+            eps (float): Small value to avoid division by zero.
         """
-        super(Fixed_Weights, self).__init__()
+        super(GradNorm, self).__init__()
         shape = (num_loss_terms,)
         self.register_buffer("lambdas", torch.zeros(shape))
         self.register_buffer("gammas", torch.zeros(shape))
-        self.register_buffer("weights", torch.ones(shape))
+        self.register_buffer("weights", torch.zeros(shape))
         self.register_buffer("alpha1", torch.tensor(alpha1))
         self.register_buffer("alpha2", torch.tensor(alpha2))
         self.register_buffer("eps", torch.tensor(eps))
         self.ref_idx = ref_idx
+
+
+@register_lw_alg("Fixed_Weights")
+class Fixed_Weights(Base_LW_alg):
+    """
+    Fixed weights loss weighting algorithm. Applies fixed weights to each loss term.
+    """
+    def __init__(self, num_loss_terms: int, weights: list = None):
+        """
+        Initializes the Fixed_Weights loss weighting algorithm.
+        Args:
+            num_loss_terms (int): Number of loss terms to weight.
+            weights (list, optional): List of fixed weights for each loss term. If None,
+                defaults to equal weights for all terms.
+        """
+        super(Fixed_Weights, self).__init__()
+        shape = (num_loss_terms,)
+        if weights is not None:
+            if len(weights) != num_loss_terms:
+                raise ValueError(
+                    f"Length of weights ({len(weights)}) does not match number of loss terms ({num_loss_terms})."
+                )
+            self.register_buffer("weights", torch.tensor(weights, dtype=torch.float32))
+        else:
+            self.register_buffer("weights", torch.ones(shape))
 
     def forward(self, losses):
         """
         Applies loss weights to loss terms and sums them.
         """
         return torch.sum(losses * self.weights)
-
-    def update(self, losses, parameters, step):
-        """
-        No updates are required for multi-task
-        """
-        pass
 
 
 # Loss computation registry
