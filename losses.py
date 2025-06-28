@@ -285,45 +285,15 @@ class Base_LW_alg(nn.Module):
             torch.Tensor: Scalar weighted sum of losses.
         """
         raise NotImplementedError("Forward method should be implemented in subclasses.")
-    
-    class Context:
-        """
-        Context object for loss weighting algorithms. Extracts necessary information 
-        for updating weights from the losses, model, and optimizer.
-        Define methods as necessary.
 
-        """
-        def __init__(self, losses, model, optimizer):
-            """
-            Initializes the context with losses, parameters, and step.
-            Args:
-                losses (list[torch.Tensor]): List of loss tensors to be weighted.
-                model: Model from which to extract information (e.g., model.parameters).
-                optimizer: Model optimizer from which to extract information.
-            """
-            raise NotImplementedError(
-                "Context should be defined in a subclass of Base_LW_alg"
-            )
-    
-    def build_context(self, losses, model, optimizer):
-        """
-        Builds a context object for the loss weighting algorithm.
-        Args:
-            losses (list[torch.Tensor]): List of loss tensors to be weighted.
-            model: Model from which to extract information (e.g., model.parameters).
-            optimizer: Model optimizer from which to extract information.
-        Returns:
-            Context: Context object containing necessary information for updating weights.
-        """
-        return self.Context(losses, model, optimizer)
-
-    def update(self, context):
+    def update(self, losses, model, optimizer):
         """
         Optionally update the loss weights.
         Override in subclasses when loss weights need to be dynamically updated.
         Args:
-            context: Context object containing necessary information for updating 
-            weights.
+            losses (list[torch.Tensor]): List of loss tensors to be weighted.
+            model: Model from which to extract information (e.g., model.parameters).
+            optimizer: Model optimizer from which to extract information.
         """
         pass
 
@@ -395,15 +365,17 @@ class Two_Moment_Weighting(Base_LW_alg):
         """
         return torch.sum(losses * self.weights)
 
-    def update(self, losses, parameters, step):
+    def update(self, losses: list[torch.Tensor], model, optimizer):
         """
         Updates the loss weights.
         Args:
-            losses: Flattened tensor of losses to be weighted
-            parameters: Network params (e.g., model.parameters)
-            step: Global step for bias correction (e.g., model.global_step)
+            losses (list[torch.Tensor]): List of loss tensors to be weighted.
+            model: Model from which to extract information (e.g., model.parameters).
+            optimizer: Model optimizer from which to extract information.
         """
-        # Calculate reference loss gradients, etc.
+        parameters = list(model.parameters())
+        step = model.step if hasattr(model.global_step, 'step') else 0
+        # Obtain the reference loss gradients, etc.
         ref_loss = losses[self.ref_idx]
         ref_grads = torch.autograd.grad(
             ref_loss,
@@ -430,8 +402,8 @@ class Two_Moment_Weighting(Base_LW_alg):
                 grads_mean = torch.mean(torch.abs(grads_flat))
                 grads_mean_sq = torch.mean(torch.abs(grads_flat) ** 2)
                 # Calculate moment estimates w/ nugget to avoid instability
-                lambda_hat = ref_grads_max / (grads_mean + 1e-6)
-                gamma_hat = ref_grads_max_sq / (grads_mean_sq + 1e-6)
+                lambda_hat = ref_grads_max / (grads_mean + self.eps)
+                gamma_hat = ref_grads_max_sq / (grads_mean_sq + self.eps)
                 # Calculate moving averages
                 lambda_mavg = (1 - self.alpha1) * self.lambdas[
                     self.ref_idx
@@ -440,8 +412,8 @@ class Two_Moment_Weighting(Base_LW_alg):
                     self.ref_idx
                 ] + self.alpha2 * gamma_hat
                 # Bias correction
-                m = lambda_mavg / (1 - torch.pow(1 - self.alpha1, step))
-                v = gamma_mavg / (1 - torch.pow(1 - self.alpha2, step))
+                m = lambda_mavg / (1 - torch.pow(1 - self.alpha1, step + 1))
+                v = gamma_mavg / (1 - torch.pow(1 - self.alpha2, step + 1))
                 # Calculate weight and update
                 self.weights[idx] = m / (torch.sqrt(v) + self.eps)
                 self.lambdas[idx] = lambda_mavg
@@ -452,7 +424,7 @@ class Two_Moment_Weighting(Base_LW_alg):
 @register_lw_alg("GradNorm")
 class GradNorm(Base_LW_alg):
     """TODO: IMPLEMENT. UPDATE DOCSTRING AT LATER DATE."""
-    def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):
+    def __init__(self, num_loss_terms: int, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):
         """
         Initializes the GradNorm loss weighting algorithm.
         Args:
@@ -505,9 +477,9 @@ class Fixed_Weights(Base_LW_alg):
 
 
 # Loss computation registry
-LOSS_COMP_REGISTRY = {}
+LOSS_HANDLER_REGISTRY = {}
 
-def register_loss_comp(name):
+def register_loss_handler(name):
     """
     Decorator to register a loss computation with the given name.
     
@@ -518,6 +490,32 @@ def register_loss_comp(name):
         function: The decorator function that registers the loss computation.
     """
     def decorator(cls):
-        LOSS_COMP_REGISTRY[name] = cls
+        LOSS_HANDLER_REGISTRY[name] = cls
         return cls
     return decorator
+
+@register_loss_handler("Base_Loss_Handler")
+class Base_Loss_Handler(nn.Module):
+    """
+    Base class for loss computation handlers. Should not be instantiated directly.
+    Subclasses should implement the `forward()` method to compute the loss.
+    """
+    def __init__(self):
+        super(Base_Loss_Handler, self).__init__()
+        if type(self) is Base_Loss_Handler:
+            raise NotImplementedError(
+                "Base_Loss_Handler should not be instantiated directly."
+                )
+
+    def forward(self, mu, y, var, sigma):
+        """
+        Computes the loss. Define in subclasses.
+        Args:
+            mu (torch.Tensor): Predicted mean tensor.
+            y (torch.Tensor): Target tensor.
+            var (torch.Tensor): Variance tensor.
+            sigma (torch.Tensor): Standard deviation tensor.
+        """
+        raise NotImplementedError("Forward method should be implemented in subclasses.")
+
+
