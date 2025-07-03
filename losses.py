@@ -44,38 +44,70 @@ def register_loss(name):
 
 
 # loss functions
-@register_loss("IS_loss")
-class IS_loss(nn.Module):
+@register_loss("Base_Loss")
+class Base_Loss(nn.Module):
     """
-    Interval score loss. Assumes 95% CI. Requires network output to be dist. object.
+    Base class for all losses. Should not be instantiated directly.
     """
-
-    def __init__(self, alpha=0.05):
+    def __init__(self):
         """
-        Initializes the IS_loss with a significance level for the interval score.
+        Initializes the Base_Loss.
+        requires_probabilistic_output (bool): If True, assumes the model outputs a 
+            distribution object. If False, assumes the model outputs raw tensors.
+        """
+        super(Base_Loss, self).__init__()
+        self.requires_probabilistic_output = False
+
+    def forward(self, preds, y) -> torch.Tensor:
+        """
+        Computes the loss. Define in subclasses.
         Args:
-            alpha (float): Significance level for the interval score, default is 0.05.
+            preds (torch.Tensor or torch.distributions.Distribution): Model predictions.
+            y (torch.Tensor): Target values.
+        Returns:
+            torch.Tensor: The computed loss.
         """
-        super(IS_loss, self).__init__()
-        self.register_buffer("alpha", torch.tensor(alpha))
+        raise NotImplementedError("Forward method should be implemented in subclasses.")
 
-    def forward(self, mu, y, var, sigma):
+
+@register_loss("MSE_loss")
+class MSE_loss(Base_Loss):
+    """
+    MSE loss. Works with either dist. object or raw tensor output.
+    """
+    def __init__(self, probabilistic_output: bool = False):
         """
-        Assumes predictions is a distribution object
+        Initializes the MSE_loss.
+        Args:
+            is_probabilistic (bool): If True, assumes the model outputs a distribution 
+                object. If False, assumes the model outputs raw tensors.
         """
-        mu_lb = mu - 1.96 * sigma
-        mu_ub = mu + 1.96 * sigma
-        loss = mu_ub - mu_lb
-        loss += (y > mu_ub).float() * 2 / self.alpha * (y - mu_ub)
-        loss += (y < mu_lb).float() * 2 / self.alpha * (mu_lb - y)
-        loss = loss.mean()
+        super(MSE_loss, self).__init__()
+        self.is_probabilistic = probabilistic_output
+
+    def forward(self, preds, y) -> torch.Tensor:
+        """
+        Computes the mean squared error loss.
+        Args:
+            preds (torch.Tensor or torch.distributions.Distribution): Model predictions.
+            y (torch.Tensor): Target values.
+        """
+        if self.is_probabilistic:
+            # If the model outputs a distribution object, extract the mean
+            preds = preds.mean
+        loss = F.mse_loss(preds, y)
         return loss
 
 
 @register_loss("NLL_loss")
-class NLL_loss(nn.Module):
+class NLL_loss(Base_Loss):
     """
     Negative log likelihood loss. Requires network output to be dist. object.
+    We add a constant of 6 to the loss to ensure it is positive, as the negative log 
+    likelihood can be negative for some distributions. Since a nugget of eps = 1e-6
+    is added, this ensures that the loss is always positive and avoids numerical
+    instability. See documentation of torch.nn.functional.gaussian_nll_loss:
+    https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.gaussian_nll_loss.html
     """
 
     def __init__(self):
@@ -85,52 +117,88 @@ class NLL_loss(nn.Module):
             None
         """
         super(NLL_loss, self).__init__()
+        self.requires_probabilistic_output = True
 
-    def forward(self, mu, y, var, sigma):
+    def forward(self, preds_dist, y) -> torch.Tensor:
+        """
+        Computes the negative log likelihood loss.
+        Args:
+            preds_dist (torch.distributions.Distribution): Predicted dist. object.
+            y (torch.Tensor): Target values.
+        """
+        mu = preds_dist.mean
+        var = preds_dist.variance
         loss = F.gaussian_nll_loss(mu, y, var, full=True, eps=1e-6) + 6
         return loss
-    
-@register_loss("NLL_IS_loss")
-class NLL_IS_loss(nn.Module):
+
+
+@register_loss("IS_loss")
+class IS_loss(Base_Loss):
     """
-    Negative log-likelihood loss with interval score. Assumes 95% CI.
-    This is a weighted sum of NLL_loss and IS_loss.
-    Requires network output to be dist. object.
-    Typicaly not used - instead, IS is used as a regularizer with its own weight.
-    
+    Interval score loss. Assumes 95% CI. Requires network output to be dist. object.
+    Typically used as a regularizer.
+    For a definition and in-depth discussion of the interval score, see:
+    Probabilistic Neural Data Fusion for Learning from an Arbitrary Number of 
+    Multi-fidelity Data Sets by Mora and Eweis-LaBolle et. al. (2023).
+    https://arxiv.org/abs/2301.13271
     """
 
-    def __init__(self, NLL_weight = 0.5, IS_weight = 0.5, alpha=0.05):
+    def __init__(self, alpha=0.05):
         """
-        Initializes the NLL_IS_loss with weights for NLL and IS loss.
+        Initializes the IS_loss with a significance level for the interval score.
         Args:
-            weights (list): Weights for NLL and IS loss, respectively.
-            alpha (float): Significance level for the interval score.
+            alpha (float): Significance level for the interval score, default is 0.05.
         """
-        super(NLL_IS_loss, self).__init__()
-        self.register_buffer("NLL_weight", torch.tensor(NLL_weight))
-        self.register_buffer("IS_weight", torch.tensor(IS_weight))
+        super(IS_loss, self).__init__()
+        self.requires_probabilistic_output = True
         self.register_buffer("alpha", torch.tensor(alpha))
-        self.NLL_loss = NLL_loss()
-        self.IS_loss = IS_loss(alpha=alpha)
 
-    def forward(self, mu, y, var, sigma):
-        nll_loss = self.NLL_weight * self.NLL_loss(mu, y, var, sigma)
-        is_loss = self.IS_weight * self.IS_loss(mu, y, var, sigma)
-        return nll_loss + is_loss
-
-@register_loss("MSE_loss")
-class MSE_loss(nn.Module):
-    """
-    MSE loss. Works with either dist. object or raw tensor output.
-    """
-
-    def __init__(self):
-        super(MSE_loss, self).__init__()
-
-    def forward(self, mu, y, var, sigma):
-        loss = F.mse_loss(mu, y)
+    def forward(self, preds_dist, y) -> torch.Tensor:
+        """
+        Computes the interval score loss.
+        Args:
+            preds_dist (torch.distributions.Distribution): Predicted dist. object.
+            y (torch.Tensor): Target values.
+        """
+        mu = preds_dist.mean
+        sigma = preds_dist.stddev
+        mu_lb = mu - 1.96 * sigma
+        mu_ub = mu + 1.96 * sigma
+        loss = mu_ub - mu_lb
+        loss += (y > mu_ub).float() * 2 / self.alpha * (y - mu_ub)
+        loss += (y < mu_lb).float() * 2 / self.alpha * (mu_lb - y)
+        loss = torch.mean(loss)
         return loss
+
+
+@register_loss("KL_Div_Var_Only_Loss")
+class KL_Div_Var_Only_Loss(Base_Loss):
+    """
+    KL divergence loss for variational inference. Assumes network output is a 
+    distribution object.
+    This loss computes the KL divergence between the predicted distribution and a 
+    standard normal distribution, focusing only on the variance.
+    """
+
+    def __init__(self, prior_var = 0.01, eps = 1e-8):
+        super(KL_Div_Var_Only_Loss, self).__init__()
+        self.requires_probabilistic_output = True
+        self.register_buffer("prior_var", torch.tensor(prior_var))
+        self.register_buffer("eps", torch.tensor(eps))
+
+    def forward(self, preds_dist, y) -> torch.Tensor:
+        """
+        Computes the KL divergence loss focusing on variance.
+        Args:
+            preds_dist (torch.distributions.Distribution): Predicted dist. object.
+            y (torch.Tensor): Target values.
+        Returns:
+            torch.Tensor: The computed KL divergence loss.
+        """
+        var = preds_dist.variance
+        prior_vars = self.prior_var * torch.ones_like(y)
+        KL_divs = torch.log(torch.sqrt(var) / torch.sqrt(prior_vars) + self.eps) + prior_vars / (2 * var) - 0.5
+        return torch.mean(KL_divs)
 
 # Data splitting registry
 DATA_SPLIT_REGISTRY = {}
@@ -201,19 +269,22 @@ class Split_by_Source(Base_Data_Split):
     """
     Splits data by source. Assumes source is one-hot encoded.
     """
-    def __init__(self, config: dict[any, any] = None):
+    def __init__(self, config: dict[any, any]):
         """
         Initializes the Split_by_Source with the number of sources.
         Args:
             config (dict): Config object. Should contain 'num_sources' key.
         """
         super(Split_by_Source, self).__init__()
-        if config is not None and "num_sources" in config:
-            self.register_buffer("num_sources", torch.tensor(config["num_sources"]))
+        if "num_sources" not in config:
+            raise ValueError(
+                "Split_by_Source requires 'num_sources' key in config."
+                )
         else:
-            pass  # num_sources will be set in forward method
+            self.register_buffer("num_sources", torch.tensor(config["num_sources"]))
+            self.register_buffer("num_splits", torch.tensor(config["num_sources"]))
         
-    def forward(self, source, cat, num, y):
+    def forward(self, source, cat, num, y, preds):
         """
         Splits data by source. Assumes source is one-hot encoded.
         Args:
@@ -221,14 +292,10 @@ class Split_by_Source(Base_Data_Split):
             cat (torch.Tensor): Categorical data tensor.
             num (torch.Tensor): Numerical data tensor.
             y (torch.Tensor): Target data tensor.
+            preds (torch.Tensor): Model predictions tensor.
         Returns:
             Out: List of loss tensors split by source.
         """
-        if not hasattr(self, "num_sources"):
-            # If num_sources is not set, determine it from the source tensor
-            self.register_buffer(
-                "num_sources", torch.tensor(source.shape[-1]), device=source.device
-                )
         out = []
         for ds in range(self.num_sources.item()):
             # Get indices for the current source
@@ -238,7 +305,50 @@ class Split_by_Source(Base_Data_Split):
             cat_split = cat[source_mask, :]
             num_split = num[source_mask, :]
             y_split = y[source_mask, :]
-            out.append((source_split, cat_split, num_split, y_split))
+            preds_split = preds[source_mask, :]
+            out.append((source_split, cat_split, num_split, y_split, preds_split))
+        return out
+
+
+@register_data_split("Split_by_Output_Dim")
+class Split_by_Output_Dim(Base_Data_Split):
+    """
+    Splits data by output dimension. Used in multi-output regression tasks where each
+    output dimension is treated as a separate task
+    """
+    def __init__(self, config: dict[any, any]):
+        """
+        Initializes the Split_by_Output_Dim with the number of output dimensions.
+        Args:
+            config (dict): Config object. Should contain 'num_outputs' key.
+        """
+        super(Split_by_Output_Dim, self).__init__()
+        if "num_outputs" not in config:
+            raise ValueError(
+                "Split_by_Output_Dim requires 'num_outputs' key in config."
+                )
+        else:
+            self.register_buffer("num_outputs", torch.tensor(config["num_outputs"]))
+            self.register_buffer("num_splits", torch.tensor(config["num_outputs"]))
+        
+    def forward(self, source, cat, num, y, preds):
+        """
+        Splits data by output dimension.
+        Args:
+            source (torch.Tensor): Source data tensor.
+            cat (torch.Tensor): Categorical data tensor.
+            num (torch.Tensor): Numerical data tensor.
+            y (torch.Tensor): Target data tensor.
+            preds (torch.Tensor): Model predictions tensor.
+        Returns:
+            out: List of loss tensors split by output dimension.
+        """
+        out = []
+        for ds in range(self.num_outputs.item()):
+            # Get indices for the current output dimension
+            y_split = y[:, ds].unsqueeze(1)
+            preds_split = preds[:, ds].unsqueeze(1)
+            out.append((source, cat, num, y_split, preds_split))
         return out
 
 
@@ -435,6 +545,9 @@ class GradNorm(Base_LW_alg):
             eps (float): Small value to avoid division by zero.
         """
         super(GradNorm, self).__init__()
+        raise NotImplementedError(
+            "GradNorm is not yet implemented. Please implement the forward and update methods."
+        )
         shape = (num_loss_terms,)
         self.register_buffer("lambdas", torch.zeros(shape))
         self.register_buffer("gammas", torch.zeros(shape))
@@ -507,15 +620,179 @@ class Base_Loss_Handler(nn.Module):
                 "Base_Loss_Handler should not be instantiated directly."
                 )
 
-    def forward(self, mu, y, var, sigma):
-        """
-        Computes the loss. Define in subclasses.
-        Args:
-            mu (torch.Tensor): Predicted mean tensor.
-            y (torch.Tensor): Target tensor.
-            var (torch.Tensor): Variance tensor.
-            sigma (torch.Tensor): Standard deviation tensor.
-        """
-        raise NotImplementedError("Forward method should be implemented in subclasses.")
 
 
+@register_loss_handler("One_Stage_Loss_Handler")
+class One_Stage_Loss_Handler(Base_Loss_Handler):
+    """
+    Loss handler that computes loss in a single stage, splitting data only once.
+    """
+    def __init__(
+            self,
+            config: dict[any, any],
+            ):
+        """
+        Initializes the One_Stage_Loss_Handler with a configuration object.
+        Config object should contain the following entries:
+            - loss_function_classes (list): List of loss function class names to use.
+            - loss_function_configs (list): List of configuration dictionaries for each 
+                loss function.
+            - data_split_classes (list): Name of the data splitting class to use. For 
+                one-stage loss handler, this should be a list of length 1 with only one 
+                split.
+            - data_split_configs (list): List of configuration dictionaries for each 
+                data splitting class.
+            - LW_alg_classes (list): List of loss weighting algorithm class names to 
+                use. For one-stage loss handler, this should be a list of length 1 with 
+                only one algorithm.
+            - LW_alg_configs (list): List of configuration dictionaries for each loss 
+                weighting algorithm.
+            - regularizer_classes (list, optional): List of regularizer class names to 
+                use.
+            - regularizer_configs (list, optional): List of configuration dictionaries 
+                for each regularizer class. 
+        """
+        super(One_Stage_Loss_Handler, self).__init__()
+        # Check that there is only one data split and one loss weighting algorithm
+        if len(config["data_split_classes"]) != 1:
+            raise ValueError(
+                "One_Stage_Loss_Handler requires exactly one data split class."
+                )
+        if len(config["LW_alg_classes"]) != 1:
+            raise ValueError(
+                "One_Stage_Loss_Handler requires exactly one loss weighting algorithm class."
+                )
+        # Instantiate loss functions, data splits, and loss weighting algorithms
+        self.loss_functions = nn.ModuleList(
+            [LOSS_REGISTRY[loss_fn_class](**config) for loss_fn_class, config in zip(
+                config["loss_function_classes"], config["loss_function_configs"]
+            )]
+        )
+        self.data_split = DATA_SPLIT_REGISTRY[config["data_split_classes"][0]](**config["data_split_configs"][0])
+        # Extract number of splits from the data split class
+        if not hasattr(self.data_split, "num_splits"):
+            raise ValueError(
+                "Data split class must have 'num_splits' attribute to determine number of splits."
+                )
+        self.num_splits = self.data_split.num_splits.item()
+        # Add number of loss terms to the config for the loss weighting algorithm
+        config["LW_alg_configs"][0]["num_loss_terms"] = len(self.loss_functions) * self.num_splits
+        # Instantiate the loss weighting algorithm
+        self.loss_weighting_algorithm = LW_ALG_REGISTRY[config["LW_alg_classes"][0]](**config["LW_alg_configs"][0])
+        # Instantiate regularizers if provided
+        if "regularizer_classes" in config and "regularizer_configs" in config:
+            self.regularizers = nn.ModuleList(
+                [LOSS_REGISTRY[reg_class](**reg_config) for reg_class, reg_config in zip(
+                    config["regularizer_classes"], config["regularizer_configs"]
+                )]
+            )
+        
+        def compute_loss_terms(self, source, cat, num, y, preds):
+            """
+            Computes the loss terms for the given data.
+            Args:
+                source (torch.Tensor): Source data tensor.
+                cat (torch.Tensor): Categorical data tensor.
+                num (torch.Tensor): Numerical data tensor.
+                y (torch.Tensor): Target data tensor.
+                preds (torch.Tensor): Model predictions tensor.
+            Returns:
+                list: List of loss tensors for each loss function and data split.
+            """
+            # Split data into individual components
+            data_splits = self.data_split(source, cat, num, y, preds)
+            # Initialize list to store losses
+            losses = []
+            # Compute loss for each data split and each loss function
+            for data_split in data_splits:
+                source_split, cat_split, num_split, y_split, preds_split = data_split
+                for loss_fn in self.loss_functions:
+                    loss = loss_fn(preds_split, y_split)
+                    losses.append(loss)
+            self.register_buffer("loss_terms", torch.stack(losses))  # Store loss terms
+            return losses  # TODO: Decide whether to return losses or not
+        
+        def update_loss_weights(self, model, optimizer):
+            """
+            Updates the loss weights using the loss weighting algorithm.
+            Args:
+                model: Model from which to extract information (e.g., model.parameters).
+                optimizer: Model optimizer from which to extract information.
+            """
+            if not hasattr(self, "loss_terms"):
+                raise ValueError(
+                    "Loss terms have not been computed. Call compute_loss_terms() first."
+                )
+            self.loss_weighting_algorithm.update(self.loss_terms, model, optimizer)
+
+        def compute_loss(self, source, cat, num, y, preds):
+            """
+            Computes the final loss by applying the loss weighting algorithm to the 
+            computed loss terms.
+            Returns:
+                torch.Tensor: The final weighted loss.
+            """
+            if not hasattr(self, "loss_terms"):
+                raise ValueError(
+                    "Loss terms have not been computed. Call compute_loss_terms() first."
+                )
+            weighted_loss = self.loss_weighting_algorithm(self.loss_terms)
+            # Apply regularizers if provided
+            if hasattr(self, "regularizers"):
+                for reg in self.regularizers:
+                    weighted_loss += reg(preds, y)
+            return weighted_loss
+
+
+@register_loss_handler("Heirarchical_Loss_Handler")
+class Heirarchical_Loss_Handler(Base_Loss_Handler):
+    """
+    Loss handler that computes loss heirarchically via two data splits, e.g., by both 
+    source and output. 
+    """
+    def __init__(self, config: dict[any, any]):
+        """
+        Initializes the Heirarchical_Loss_Handler with a configuration object.
+        Config object should contain the following entries:
+            - loss_function_classes (list): List of loss function class names to use.
+            - loss_function_configs (list): List of configuration dictionaries for each 
+                loss function.
+            - data_split_classes (list): List of data splitting class names to use. 
+                Should contain two classes for heirarchical splitting.
+            - data_split_configs (list): List of configuration dictionaries for each 
+                data splitting class.
+            - LW_alg_classes (list): List of loss weighting algorithm class names to 
+                use. For heirarchical loss handler, this should be a list of length 1 
+                with only one algorithm.
+            - LW_alg_configs (list): List of configuration dictionaries for each loss 
+                weighting algorithm.
+            - regularizer_classes (list, optional): List of regularizer class names to 
+                use.
+            - regularizer_configs (list, optional): List of configuration dictionaries 
+                for each regularizer class. 
+        """
+        super(Heirarchical_Loss_Handler, self).__init__()
+        # Check that there are two data splits and one loss weighting algorithm
+        if len(config["data_split_classes"]) != 2:
+            raise ValueError(
+                "Heirarchical_Loss_Handler requires exactly two data split classes."
+                )
+        if len(config["LW_alg_classes"]) != 1:
+            raise ValueError(
+                "Heirarchical_Loss_Handler requires exactly one loss weighting algorithm class."
+                )
+        # Instantiate loss functions, data splits, and loss weighting algorithms
+        self.loss_functions = nn.ModuleList(
+            [LOSS_REGISTRY[loss_fn_class](**config) for loss_fn_class, config in zip(
+                config["loss_function_classes"], config["loss_function_configs"]
+            )]
+        )
+        self.data_splits = nn.ModuleList(
+            [DATA_SPLIT_REGISTRY[data_split_class](**config) for data_split_class, config in zip(
+                config["data_split_classes"], config["data_split_configs"]
+            )]
+        )
+        # Extract number of splits from the first data split class
+        if not hasattr(self.data_splits[0], "num_splits"):
+            raise ValueError(
+                "First data split class must have 'num_splits' attribute to determine number of splits."
