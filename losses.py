@@ -24,7 +24,56 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-# Loss registry for storing different types of losses
+# Basic loss functions
+def NLL_loss(mu, var, targets):
+    """
+    Computes the negative log likelihood loss.
+    Args:
+        mu (torch.Tensor): Mean of the predicted distribution.
+        var (torch.Tensor): Variance of the predicted distribution.
+        targets (torch.Tensor): Target values.
+    """
+    loss = F.gaussian_nll_loss(mu, targets, var, full=True, eps=1e-6) + 6
+    return loss
+
+
+def IS_loss(mu, sigma, targets, alpha=0.05):
+    """
+    Computes the interval score loss.
+    Args:
+        preds_dist (torch.distributions.Distribution): Predicted dist. object.
+        y (torch.Tensor): Target values.
+        alpha (float): Significance level for the interval score, default is 0.05.
+        strength (float): Scaling factor for the loss, default is 1.0.
+    Returns:
+        torch.Tensor: The computed interval score loss.
+    """
+    mu_lb = mu - 1.96 * sigma
+    mu_ub = mu + 1.96 * sigma
+    loss = mu_ub - mu_lb
+    loss += (targets > mu_ub).float() * 2 / alpha * (targets - mu_ub)
+    loss += (targets < mu_lb).float() * 2 / alpha * (mu_lb - targets)
+    loss = torch.mean(loss)
+    return loss
+
+
+def KL_div_var_only_loss(var, targets, prior_var=0.01, eps=1e-8):
+    """
+    Computes the KL divergence loss focusing on variance.
+    Args:
+        preds_dist (torch.distributions.Distribution): Predicted dist. object.
+        y (torch.Tensor): Target values.
+        prior_var (float): Prior variance for KL divergence.
+        eps (float): Small value to avoid division by zero.
+    Returns:
+        torch.Tensor: The computed KL divergence loss.
+    """
+    prior_vars = prior_var * torch.ones_like(targets)
+    KL_divs = torch.log(torch.sqrt(var) / torch.sqrt(prior_vars) + eps) + prior_vars / (2 * var) - 0.5
+    return torch.mean(KL_divs)
+
+
+# Loss registry for storing different types of loss classes
 LOSS_REGISTRY = {}
 
 def register_loss(name):
@@ -43,7 +92,46 @@ def register_loss(name):
     return decorator
 
 
-# loss functions
+# Loss context object to store model parameters/outputs to be accessed by loss classes.
+@register_loss("Loss_Context")
+class Loss_Context(nn.Module):
+    """
+    Context object for losses. Stores model parameters and outputs to be accessed by 
+    loss classes.
+    User can add more objects to the context if future loss classes require them.
+    """
+    def __init__(self, model, batch, outputs):
+        """
+        Initializes the Loss_Context with model parameters and outputs.
+        Args:
+            model (pl.LightningModule): The model from which to extract parameters or 
+                other information if needed.
+            batch (tuple): The batch of data to be used in loss computation. For typical 
+                usage of ProNDF, the batch will have the form 
+                (source, cat, num, targets), where source and cat are one-hot encoded.
+            outputs (dict[str, str]): The model outputs to be used in loss 
+                computation. Should be containing a dictionary for each block with that 
+                block's outputs. For example, if B1 and B3 are probabilistic while B2 is 
+                deterministic, outputs would take the following form:
+                outputs = {
+                    "B1": {
+                        "out": torch.Tensor, 
+                        "out_dist": torch.distributions.Distribution
+                        },
+                    "B2": {"out": torch.Tensor},
+                    "B3": {
+                        "out": torch.Tensor, 
+                        "out_dist": torch.distributions.Distribution
+                        }
+                }
+        """
+        super(Loss_Context, self).__init__()
+        self.model = model
+        self.batch = batch
+        self.outputs = outputs
+
+
+# loss function classes
 @register_loss("Base_Loss")
 class Base_Loss(nn.Module):
     """
@@ -58,51 +146,60 @@ class Base_Loss(nn.Module):
         super(Base_Loss, self).__init__()
         self.requires_probabilistic_output = False
 
-    def forward(self, preds, y) -> torch.Tensor:
+    def forward(self, context) -> torch.Tensor:
         """
         Computes the loss. Define in subclasses.
         Args:
-            preds (torch.Tensor or torch.distributions.Distribution): Model predictions.
-            y (torch.Tensor): Target values.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
         Returns:
             torch.Tensor: The computed loss.
         """
         raise NotImplementedError("Forward method should be implemented in subclasses.")
 
 
-@register_loss("MSE_loss")
-class MSE_loss(Base_Loss):
+@register_loss("Output_MSE_loss")
+class Output_MSE_loss(Base_Loss):
     """
-    MSE loss. Works with either dist. object or raw tensor output.
+    MSE loss on model outputs vs targets. Works with both probabilistic and 
+    deterministic outputs.
     """
-    def __init__(self, probabilistic_output: bool = False):
+    def __init__(self):
         """
         Initializes the MSE_loss.
         Args:
-            is_probabilistic (bool): If True, assumes the model outputs a distribution 
-                object. If False, assumes the model outputs raw tensors.
+            None
         """
-        super(MSE_loss, self).__init__()
-        self.is_probabilistic = probabilistic_output
+        super(Output_MSE_loss, self).__init__()
 
-    def forward(self, preds, y) -> torch.Tensor:
+    def forward(self, context) -> torch.Tensor:
         """
         Computes the mean squared error loss.
         Args:
-            preds (torch.Tensor or torch.distributions.Distribution): Model predictions.
-            y (torch.Tensor): Target values.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
+        Returns:
+            torch.Tensor: The computed loss.
         """
-        if self.is_probabilistic:
+        if not self.hasattr("probabilistic_output"):
+            self.probabilistic_output = context.model.B3.probabilistic_output
+        targets = context.batch[-1]  # Targets should be the last element in the batch
+        if self.probabilistic_output:
             # If the model outputs a distribution object, extract the mean
+            preds = context.outputs["B3"]["out_dist"]
             preds = preds.mean
-        loss = F.mse_loss(preds, y)
+        else:
+            # If the model outputs raw tensors, use them directly
+            preds = context.outputs["B3"]["out"]
+        loss = F.mse_loss(preds, targets, reduction="mean")
         return loss
 
 
-@register_loss("NLL_loss")
-class NLL_loss(Base_Loss):
+@register_loss("Output_NLL_loss")
+class Output_NLL_loss(Base_Loss):
     """
-    Negative log likelihood loss. Requires network output to be dist. object.
+    Negative log likelihood loss on the network output. Network output must be able to 
+    output a distribution.
     We add a constant of 6 to the loss to ensure it is positive, as the negative log 
     likelihood can be negative for some distributions. Since a nugget of eps = 1e-6
     is added, this ensures that the loss is always positive and avoids numerical
@@ -119,86 +216,105 @@ class NLL_loss(Base_Loss):
         super(NLL_loss, self).__init__()
         self.requires_probabilistic_output = True
 
-    def forward(self, preds_dist, y) -> torch.Tensor:
+    def forward(self, context) -> torch.Tensor:
         """
         Computes the negative log likelihood loss.
         Args:
-            preds_dist (torch.distributions.Distribution): Predicted dist. object.
-            y (torch.Tensor): Target values.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
+        Returns:
+            torch.Tensor: The computed loss.
         """
+        targets = context.batch[-1]  # Targets should be the last element in the batch
+        preds_dist = context.outputs["B3"]["out_dist"]
         mu = preds_dist.mean
         var = preds_dist.variance
-        loss = F.gaussian_nll_loss(mu, y, var, full=True, eps=1e-6) + 6
+        loss = NLL_loss(mu, var, targets)
         return loss
 
 
-@register_loss("IS_loss")
-class IS_loss(Base_Loss):
+@register_loss("Output_IS_loss")
+class Output_IS_loss(Base_Loss):
     """
     Interval score loss. Assumes 95% CI. Requires network output to be dist. object.
-    Typically used as a regularizer.
+    Typically used as a regularizer with a tunable strength parameter.
     For a definition and in-depth discussion of the interval score, see:
     Probabilistic Neural Data Fusion for Learning from an Arbitrary Number of 
     Multi-fidelity Data Sets by Mora and Eweis-LaBolle et. al. (2023).
     https://arxiv.org/abs/2301.13271
     """
 
-    def __init__(self, alpha=0.05):
+    def __init__(self, alpha=0.05, strength=1.0):
         """
         Initializes the IS_loss with a significance level for the interval score.
         Args:
             alpha (float): Significance level for the interval score, default is 0.05.
+            strength (float): Scaling factor for the loss, default is 1.0.
         """
-        super(IS_loss, self).__init__()
+        super(Output_IS_loss, self).__init__()
         self.requires_probabilistic_output = True
         self.register_buffer("alpha", torch.tensor(alpha))
+        self.register_buffer("strength", torch.tensor(strength))
 
-    def forward(self, preds_dist, y) -> torch.Tensor:
+    def forward(self, context) -> torch.Tensor:
         """
         Computes the interval score loss.
         Args:
-            preds_dist (torch.distributions.Distribution): Predicted dist. object.
-            y (torch.Tensor): Target values.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
+        Returns:
+            torch.Tensor: The computed loss.
         """
+        targets = context.batch[-1]  # Targets should be the last element in the batch
+        preds_dist = context.outputs["B3"]["out_dist"]
         mu = preds_dist.mean
         sigma = preds_dist.stddev
-        mu_lb = mu - 1.96 * sigma
-        mu_ub = mu + 1.96 * sigma
-        loss = mu_ub - mu_lb
-        loss += (y > mu_ub).float() * 2 / self.alpha * (y - mu_ub)
-        loss += (y < mu_lb).float() * 2 / self.alpha * (mu_lb - y)
-        loss = torch.mean(loss)
-        return loss
+        loss = IS_loss(mu, sigma, targets, alpha = self.alpha.item())
+        return loss * self.strength  # Scale by strength factor
 
 
-@register_loss("KL_Div_Var_Only_Loss")
-class KL_Div_Var_Only_Loss(Base_Loss):
+@register_loss("Intermediate_KL_Div_Loss")
+class Intermediate_KL_Div_Loss(Base_Loss):
     """
-    KL divergence loss for variational inference. Assumes network output is a 
-    distribution object.
+    KL divergence loss for variational inference. Requires output of intermediate block 
+    to be a distribution object.
     This loss computes the KL divergence between the predicted distribution and a 
     standard normal distribution, focusing only on the variance.
+    Should be used to regularize the variance of the outputs of probabillstic 
+    intermediate blocks and tuned via strength parameter.
     """
 
-    def __init__(self, prior_var = 0.01, eps = 1e-8):
-        super(KL_Div_Var_Only_Loss, self).__init__()
+    def __init__(self, block_label = "B1", prior_var = 0.01, eps = 1e-8, strength=1.0):
+        """
+        Initializes the Intermediate_KL_Div_Loss with a block label, prior variance,
+        small epsilon value to avoid division by zero, and a strength factor.
+        Args:
+            block_label (str): The label of the block whose output to regularize.
+            prior_var (float): Prior variance for KL divergence, default is 0.01.
+            eps (float): Small value to avoid division by zero, default is 1e-8.
+            strength (float): Scaling factor for the loss, default is 1.0.
+        """
+        super(Intermediate_KL_Div_Loss, self).__init__()
         self.requires_probabilistic_output = True
+        self.block_label = block_label
         self.register_buffer("prior_var", torch.tensor(prior_var))
         self.register_buffer("eps", torch.tensor(eps))
+        self.register_buffer("strength", torch.tensor(strength))
 
-    def forward(self, preds_dist, y) -> torch.Tensor:
+    def forward(self, context) -> torch.Tensor:
         """
         Computes the KL divergence loss focusing on variance.
         Args:
-            preds_dist (torch.distributions.Distribution): Predicted dist. object.
-            y (torch.Tensor): Target values.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
         Returns:
-            torch.Tensor: The computed KL divergence loss.
+            torch.Tensor: The computed loss.
         """
+        targets = context.batch[-1]  # Targets should be the last element in the batch
+        preds_dist = context.outputs[self.block_label]["out_dist"]
         var = preds_dist.variance
-        prior_vars = self.prior_var * torch.ones_like(y)
-        KL_divs = torch.log(torch.sqrt(var) / torch.sqrt(prior_vars) + self.eps) + prior_vars / (2 * var) - 0.5
-        return torch.mean(KL_divs)
+        loss = KL_div_var_only_loss(var, targets, prior_var=self.prior_var.item(), eps=self.eps.item())
+        return loss * self.strength  # Scale by strength factor
 
 # Data splitting registry
 DATA_SPLIT_REGISTRY = {}
@@ -233,10 +349,8 @@ class Base_Data_Split(nn.Module):
         """
         Splits data into individual components. Define in subclasses.
         Args:
-            source (torch.Tensor): Source data tensor.
-            cat (torch.Tensor): Categorical data tensor.
-            num (torch.Tensor): Numerical data tensor.
-            y (torch.Tensor): Target data tensor.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
         """
         raise NotImplementedError("Forward method should be implemented in subclasses.")
     
@@ -249,18 +363,17 @@ class No_Split(Base_Data_Split):
     def __init__(self):
         super(No_Split, self).__init__()
 
-    def forward(self, source, cat, num, y):
+    def forward(self, context):
         """
-        Returns the input data as is without any splitting.
         Args:
-            source (torch.Tensor): Source data tensor.
-            cat (torch.Tensor): Categorical data tensor.
-            num (torch.Tensor): Numerical data tensor.
-            y (torch.Tensor): Target data tensor.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
         Returns:
             out: List containing tuple of the input tensors unmodified.
         """
-        out = [(source, cat, num, y)]
+        source, cat, num, y = context.batch
+        outputs = context.outputs["B3"]["out"]
+        out = [(source, cat, num, y, outputs)]
         return out
 
 
@@ -284,19 +397,18 @@ class Split_by_Source(Base_Data_Split):
             self.register_buffer("num_sources", torch.tensor(config["num_sources"]))
             self.register_buffer("num_splits", torch.tensor(config["num_sources"]))
         
-    def forward(self, source, cat, num, y, preds):
+    def forward(self, context):
         """
         Splits data by source. Assumes source is one-hot encoded.
         Args:
-            source (torch.Tensor): Source data tensor, one-hot encoded.
-            cat (torch.Tensor): Categorical data tensor.
-            num (torch.Tensor): Numerical data tensor.
-            y (torch.Tensor): Target data tensor.
-            preds (torch.Tensor): Model predictions tensor.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
         Returns:
             Out: List of loss tensors split by source.
         """
         out = []
+        source, cat, num, y = context.batch
+        outputs = context.outputs["B3"]["out"]
         for ds in range(self.num_sources.item()):
             # Get indices for the current source
             source_mask = source[:, ds] == 1
@@ -762,14 +874,14 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             - data_split_configs (list): List of configuration dictionaries for each 
                 data splitting class.
             - LW_alg_classes (list): List of loss weighting algorithm class names to 
-                use. For heirarchical loss handler, this should be a list of length 1 
-                with only one algorithm.
+                use. Should contain two classes for heirarchical splitting, 
+                corresponding to the two splits.
             - LW_alg_configs (list): List of configuration dictionaries for each loss 
                 weighting algorithm.
             - regularizer_classes (list, optional): List of regularizer class names to 
                 use.
             - regularizer_configs (list, optional): List of configuration dictionaries 
-                for each regularizer class. 
+                for each regularizer class.
         """
         super(Heirarchical_Loss_Handler, self).__init__()
         # Check that there are two data splits and one loss weighting algorithm
@@ -796,3 +908,4 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
         if not hasattr(self.data_splits[0], "num_splits"):
             raise ValueError(
                 "First data split class must have 'num_splits' attribute to determine number of splits."
+            )

@@ -53,12 +53,12 @@ class Base_Block(nn.Module):
     """
     def __init__(
             self,
-            is_probabilistic: bool = False,
+            probabilistic_output: bool = False,
             ):
         super(Base_Block, self).__init__()
         if type(self) is Base_Block:
             raise NotImplementedError("Base_Block should not be instantiated directly.")
-        self.is_probabilistic = is_probabilistic
+        self.probabilistic_output = probabilistic_output
     
     def forward(self, x):
         """
@@ -182,6 +182,7 @@ class Prob_Block(Base_Block):
         """
         super(Prob_Block, self).__init__()
         # Store params
+        self.probabilistic_output = True
         self.d_in = d_in
         self.d_out = d_out
         self.hidden_layers = hidden_layers
@@ -213,6 +214,18 @@ class Prob_Block(Base_Block):
         temp = self.architecture(x)
         mu, log_var = torch.chunk(temp, 2, dim=-1)
         return reparameterization_trick(mu, log_var)
+    
+    def distribution_params(self, x):
+        """
+        Runs through network and provides parameters of the output distribution.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, d_in).
+        Returns:
+            tuple: A tuple containing the mean and log variance of the output distribution.
+        """
+        temp = self.architecture(x)
+        mu, log_var = torch.chunk(temp, 2, dim=-1)
+        return mu, log_var
 
     def predict_distribution(self, x):
         """
@@ -220,9 +233,7 @@ class Prob_Block(Base_Block):
         Args:
             x (torch.Tensor): Input tensor of shape (batch_size, d_in).
         """
-        temp = self.architecture(x)
-        mu, log_var = torch.chunk(temp, 2, dim=-1)
+        mu, log_var = self.distribution_params(x)
         sigma = torch.exp(0.5 * log_var)
         return torch.distributions.normal.Normal(mu, sigma)
     
-
