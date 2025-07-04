@@ -146,7 +146,7 @@ class Base_Loss(nn.Module):
         super(Base_Loss, self).__init__()
         self.requires_probabilistic_output = False
 
-    def forward(self, context) -> torch.Tensor:
+    def forward(self, context: Loss_Context) -> torch.Tensor:
         """
         Computes the loss. Define in subclasses.
         Args:
@@ -172,7 +172,7 @@ class Output_MSE_loss(Base_Loss):
         """
         super(Output_MSE_loss, self).__init__()
 
-    def forward(self, context) -> torch.Tensor:
+    def forward(self, context: Loss_Context) -> torch.Tensor:
         """
         Computes the mean squared error loss.
         Args:
@@ -216,7 +216,7 @@ class Output_NLL_loss(Base_Loss):
         super(NLL_loss, self).__init__()
         self.requires_probabilistic_output = True
 
-    def forward(self, context) -> torch.Tensor:
+    def forward(self, context: Loss_Context) -> torch.Tensor:
         """
         Computes the negative log likelihood loss.
         Args:
@@ -256,7 +256,7 @@ class Output_IS_loss(Base_Loss):
         self.register_buffer("alpha", torch.tensor(alpha))
         self.register_buffer("strength", torch.tensor(strength))
 
-    def forward(self, context) -> torch.Tensor:
+    def forward(self, context: Loss_Context) -> torch.Tensor:
         """
         Computes the interval score loss.
         Args:
@@ -301,7 +301,7 @@ class Intermediate_KL_Div_Loss(Base_Loss):
         self.register_buffer("eps", torch.tensor(eps))
         self.register_buffer("strength", torch.tensor(strength))
 
-    def forward(self, context) -> torch.Tensor:
+    def forward(self, context: Loss_Context) -> torch.Tensor:
         """
         Computes the KL divergence loss focusing on variance.
         Args:
@@ -345,7 +345,7 @@ class Base_Data_Split(nn.Module):
                 "Base_Data_Split should not be instantiated directly."
                 )
 
-    def forward(self, source, cat, num, y):
+    def forward(self, context: Loss_Context) -> list[Loss_Context]:
         """
         Splits data into individual components. Define in subclasses.
         Args:
@@ -363,18 +363,15 @@ class No_Split(Base_Data_Split):
     def __init__(self):
         super(No_Split, self).__init__()
 
-    def forward(self, context):
+    def forward(self, context: Loss_Context) -> list[Loss_Context]:
         """
         Args:
             context (Loss_Context): The context object containing information necessary 
             for calculating the loss.
         Returns:
-            out: List containing tuple of the input tensors unmodified.
+            out: List containing unmodified context.
         """
-        source, cat, num, y = context.batch
-        outputs = context.outputs["B3"]["out"]
-        out = [(source, cat, num, y, outputs)]
-        return out
+        return [context]
 
 
 @register_data_split("Split_by_Source")
@@ -397,29 +394,45 @@ class Split_by_Source(Base_Data_Split):
             self.register_buffer("num_sources", torch.tensor(config["num_sources"]))
             self.register_buffer("num_splits", torch.tensor(config["num_sources"]))
         
-    def forward(self, context):
+    def forward(self, context: Loss_Context) -> list[Loss_Context]:
         """
         Splits data by source. Assumes source is one-hot encoded.
         Args:
             context (Loss_Context): The context object containing information necessary 
             for calculating the loss.
         Returns:
-            Out: List of loss tensors split by source.
+            Out: List of Loss_Context objects with batches and outputs split by source.
         """
-        out = []
-        source, cat, num, y = context.batch
-        outputs = context.outputs["B3"]["out"]
+        context_splits = []
+        source, cat, num, targets = context.batch
+        outputs = context.outputs
         for ds in range(self.num_sources.item()):
             # Get indices for the current source
             source_mask = source[:, ds] == 1
-            # Split data by source
+            # Split batch by source
             source_split = source[source_mask, :]
             cat_split = cat[source_mask, :]
             num_split = num[source_mask, :]
-            y_split = y[source_mask, :]
-            preds_split = preds[source_mask, :]
-            out.append((source_split, cat_split, num_split, y_split, preds_split))
-        return out
+            targets_split = targets[source_mask, :]
+            batch_split = (source_split, cat_split, num_split, targets_split)
+            # Split outputs by source
+            outputs_split = {}
+            for block_label, block_outputs in outputs.items():
+                block_split = {}
+                out_split = block_outputs["out"][source_mask, :]
+                if "out_dist" in block_outputs:
+                    # Build split dist. object
+                    out_dist = block_outputs["out_dist"]
+                    mean_split = out_dist.mean[source_mask, :]
+                    stddev_split = out_dist.stddev[source_mask, :]
+                    out_dist_split = torch.distributions.Normal(mean_split, stddev_split)
+                    block_split["out_dist"] = out_dist_split
+                # Rebuild outputs dict
+                block_split["out"] = out_split
+                outputs_split[block_label] = block_split
+            # Append new context for the split data
+            context_splits.append(Loss_Context(context.model, batch_split, outputs_split))
+        return context_splits
 
 
 @register_data_split("Split_by_Output_Dim")
