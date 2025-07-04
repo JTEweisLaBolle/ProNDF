@@ -23,6 +23,7 @@ Example usage:
 import torch
 from torch import nn
 from torch.nn import functional as F
+import copy
 
 # Basic loss functions
 def NLL_loss(mu, var, targets):
@@ -456,25 +457,35 @@ class Split_by_Output_Dim(Base_Data_Split):
             self.register_buffer("num_outputs", torch.tensor(config["num_outputs"]))
             self.register_buffer("num_splits", torch.tensor(config["num_outputs"]))
         
-    def forward(self, source, cat, num, y, preds):
+    def forward(self, context: Loss_Context) -> list[Loss_Context]:
         """
-        Splits data by output dimension.
+        Splits data by source. Assumes source is one-hot encoded.
         Args:
-            source (torch.Tensor): Source data tensor.
-            cat (torch.Tensor): Categorical data tensor.
-            num (torch.Tensor): Numerical data tensor.
-            y (torch.Tensor): Target data tensor.
-            preds (torch.Tensor): Model predictions tensor.
+            context (Loss_Context): The context object containing information necessary 
+            for calculating the loss.
         Returns:
-            out: List of loss tensors split by output dimension.
+            Out: List of Loss_Context objects with batches and outputs split by output.
         """
-        out = []
-        for ds in range(self.num_outputs.item()):
-            # Get indices for the current output dimension
-            y_split = y[:, ds].unsqueeze(1)
-            preds_split = preds[:, ds].unsqueeze(1)
-            out.append((source, cat, num, y_split, preds_split))
-        return out
+        context_splits = []
+        source, cat, num, targets = context.batch
+        outputs = context.outputs
+        for out_idx in range(self.num_outputs.item()):
+            #Split targets by output dim
+            targets_split = targets[:, out_idx].unsqueeze(1)
+            batch_split = (source, cat, num, targets_split)
+            # Split outputs by output dim
+            outputs_split = copy.deepcopy(context.outputs)  # Copy the outputs dict
+            outputs_split["B3"]["out"] = outputs["B3"]["out"][:, out_idx].unsqueeze(1)  # Split B3 output
+            if "out_dist" in outputs["B3"]:
+                # Build split dist. object
+                out_dist = outputs["B3"]["out_dist"]
+                mean_split = out_dist.mean[:, out_idx].unsqueeze(1)
+                stddev_split = out_dist.stddev[:, out_idx].unsqueeze(1)
+                out_dist_split = torch.distributions.Normal(mean_split, stddev_split)
+                outputs_split["B3"]["out_dist"] = out_dist_split
+            # Append new context for the split data
+            context_splits.append(Loss_Context(context.model, batch_split, outputs_split))
+        return context_splits
 
 
 # Loss weighting algorithm registry
@@ -511,7 +522,7 @@ class Base_LW_alg(nn.Module):
                 "Base_LW_alg should not be instantiated directly."
                 )
     
-    def forward(self, losses: list[torch.Tensor]) -> torch.Tensor:
+    def forward(self, loss_terms: list[torch.Tensor]) -> torch.Tensor:
         """
         Linear combination of loss terms. Define in subclasses.
         Args:
@@ -521,7 +532,7 @@ class Base_LW_alg(nn.Module):
         """
         raise NotImplementedError("Forward method should be implemented in subclasses.")
 
-    def update(self, losses, model, optimizer):
+    def update(self, loss_terms, context: Loss_Context):
         """
         Optionally update the loss weights.
         Override in subclasses when loss weights need to be dynamically updated.
@@ -546,7 +557,7 @@ class No_Weighting(Base_LW_alg):
         super(No_Weighting, self).__init__()
         pass  # No parameters to register
 
-    def forward(self, losses):
+    def forward(self, loss_terms):
         """
         Applies loss weights to loss terms and sums them.
         Args:
@@ -555,7 +566,7 @@ class No_Weighting(Base_LW_alg):
         Returns:
             torch.Tensor: Sum of losses.
         """
-        return torch.sum(losses)
+        return torch.sum(loss_terms)
 
 
 @register_lw_alg("Two_Moment_Weighting")
@@ -592,15 +603,15 @@ class Two_Moment_Weighting(Base_LW_alg):
         self.register_buffer("eps", torch.tensor(eps))
         self.ref_idx = ref_idx
 
-    def forward(self, losses):
+    def forward(self, loss_terms):
         """
         Applies loss weights to loss terms and sums them.
         Args:
             losses (torch.Tensor): Flattened tensor of losses. Should be scalar or 1D
         """
-        return torch.sum(losses * self.weights)
+        return torch.sum(loss_terms * self.weights)
 
-    def update(self, losses: list[torch.Tensor], model, optimizer):
+    def update(self, loss_terms: list[torch.Tensor], context: Loss_Context):
         """
         Updates the loss weights.
         Args:
@@ -608,10 +619,10 @@ class Two_Moment_Weighting(Base_LW_alg):
             model: Model from which to extract information (e.g., model.parameters).
             optimizer: Model optimizer from which to extract information.
         """
-        parameters = list(model.parameters())
-        step = model.step if hasattr(model.global_step, 'step') else 0
+        parameters = list(context.model.parameters())
+        step = context.model.step if hasattr(context.model.global_step, 'step') else 0
         # Obtain the reference loss gradients, etc.
-        ref_loss = losses[self.ref_idx]
+        ref_loss = loss_terms[self.ref_idx]
         ref_grads = torch.autograd.grad(
             ref_loss,
             parameters,
@@ -622,7 +633,7 @@ class Two_Moment_Weighting(Base_LW_alg):
         ref_grads_max = torch.max(torch.abs(ref_grads_flat))
         ref_grads_max_sq = torch.max(torch.abs(ref_grads_flat) ** 2)
         # Update each loss weight
-        for idx, loss in enumerate(losses):
+        for idx, loss in enumerate(loss_terms):
             if idx == self.ref_idx:
                 self.weights[idx] = torch.tensor(1.0, device=self.weights.device)
             else:
@@ -707,11 +718,11 @@ class Fixed_Weights(Base_LW_alg):
         else:
             self.register_buffer("weights", torch.ones(shape))
 
-    def forward(self, losses):
+    def forward(self, loss_terms):
         """
         Applies loss weights to loss terms and sums them.
         """
-        return torch.sum(losses * self.weights)
+        return torch.sum(loss_terms * self.weights)
 
 
 # Loss computation registry
@@ -745,12 +756,28 @@ class Base_Loss_Handler(nn.Module):
                 "Base_Loss_Handler should not be instantiated directly."
                 )
 
+    def build_loss_context(self, model, batch, outputs):
+        """
+        Builds a Loss_Context object from the model, batch, and outputs.
+        Args:
+            model (pl.LightningModule): The model from which to extract parameters or 
+                other information if needed.
+            batch (tuple): The batch of data to be used in loss computation. For 
+                typical usage of ProNDF, the batch will have the form 
+                (source, cat, num, targets), where source and cat are one-hot encoded.
+            outputs (dict[str, str]): The model outputs to be used in loss 
+                computation. Should be containing a dictionary for each block with that 
+                block's outputs.
+        """
+        self.context = Loss_Context(model, batch, outputs)
 
 
 @register_loss_handler("One_Stage_Loss_Handler")
 class One_Stage_Loss_Handler(Base_Loss_Handler):
     """
     Loss handler that computes loss in a single stage, splitting data only once.
+    Assumes that each provided loss function as well as each data split corresponds to a 
+    separate task with respect to loss weighting.
     """
     def __init__(
             self,
@@ -795,10 +822,6 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
         )
         self.data_split = DATA_SPLIT_REGISTRY[config["data_split_classes"][0]](**config["data_split_configs"][0])
         # Extract number of splits from the data split class
-        if not hasattr(self.data_split, "num_splits"):
-            raise ValueError(
-                "Data split class must have 'num_splits' attribute to determine number of splits."
-                )
         self.num_splits = self.data_split.num_splits.item()
         # Add number of loss terms to the config for the loss weighting algorithm
         config["LW_alg_configs"][0]["num_loss_terms"] = len(self.loss_functions) * self.num_splits
@@ -811,69 +834,72 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
                     config["regularizer_classes"], config["regularizer_configs"]
                 )]
             )
-        
-        def compute_loss_terms(self, source, cat, num, y, preds):
-            """
-            Computes the loss terms for the given data.
-            Args:
-                source (torch.Tensor): Source data tensor.
-                cat (torch.Tensor): Categorical data tensor.
-                num (torch.Tensor): Numerical data tensor.
-                y (torch.Tensor): Target data tensor.
-                preds (torch.Tensor): Model predictions tensor.
-            Returns:
-                list: List of loss tensors for each loss function and data split.
-            """
-            # Split data into individual components
-            data_splits = self.data_split(source, cat, num, y, preds)
-            # Initialize list to store losses
-            losses = []
-            # Compute loss for each data split and each loss function
-            for data_split in data_splits:
-                source_split, cat_split, num_split, y_split, preds_split = data_split
-                for loss_fn in self.loss_functions:
-                    loss = loss_fn(preds_split, y_split)
-                    losses.append(loss)
-            self.register_buffer("loss_terms", torch.stack(losses))  # Store loss terms
-            return losses  # TODO: Decide whether to return losses or not
-        
-        def update_loss_weights(self, model, optimizer):
-            """
-            Updates the loss weights using the loss weighting algorithm.
-            Args:
-                model: Model from which to extract information (e.g., model.parameters).
-                optimizer: Model optimizer from which to extract information.
-            """
-            if not hasattr(self, "loss_terms"):
-                raise ValueError(
-                    "Loss terms have not been computed. Call compute_loss_terms() first."
-                )
-            self.loss_weighting_algorithm.update(self.loss_terms, model, optimizer)
 
-        def compute_loss(self, source, cat, num, y, preds):
-            """
-            Computes the final loss by applying the loss weighting algorithm to the 
-            computed loss terms.
-            Returns:
-                torch.Tensor: The final weighted loss.
-            """
-            if not hasattr(self, "loss_terms"):
-                raise ValueError(
-                    "Loss terms have not been computed. Call compute_loss_terms() first."
-                )
-            weighted_loss = self.loss_weighting_algorithm(self.loss_terms)
-            # Apply regularizers if provided
-            if hasattr(self, "regularizers"):
-                for reg in self.regularizers:
-                    weighted_loss += reg(preds, y)
-            return weighted_loss
+    def compute_loss_terms(self):
+        """
+        Computes the loss terms for the given data.
+        Args:
+            none
+        Returns:
+            list: List of loss tensors for each loss function and data split.
+        """
+        # Split data into individual components
+        context_splits = self.data_split(self.context)
+        # Initialize list to store losses
+        losses = []
+        # Compute loss for each data split and each loss function
+        for context in context_splits:
+            for loss_fn in self.loss_functions:
+                loss = loss_fn(context)
+                losses.append(loss)
+        self.register_buffer("loss_terms", torch.stack(losses))  # Store loss terms
+        return losses  # TODO: Decide whether to return losses or not
+    
+    def update_loss_weights(self):
+        """
+        Updates the loss weights using the loss weighting algorithm.
+        Args:
+            model: Model from which to extract information (e.g., model.parameters).
+            optimizer: Model optimizer from which to extract information.
+        """
+        if not hasattr(self, "loss_terms"):
+            raise ValueError(
+                "Loss terms have not been computed. Call compute_loss_terms() first."
+            )
+        self.loss_weighting_algorithm.update(self.loss_terms, self.context)
+
+    def compute_loss(self):
+        """
+        Computes the final loss by applying the loss weighting algorithm to the 
+        computed loss terms.
+        Args:
+            None
+        Returns:
+            torch.Tensor: The final weighted loss.
+        """
+        if not hasattr(self, "loss_terms"):
+            raise ValueError(
+                "Loss terms have not been computed. Call compute_loss_terms() first."
+            )
+        weighted_loss = self.loss_weighting_algorithm(self.loss_terms)
+        # Apply regularizers if provided
+        if hasattr(self, "regularizers"):
+            for reg in self.regularizers:
+                weighted_loss += reg(self.context)
+        return weighted_loss
 
 
 @register_loss_handler("Heirarchical_Loss_Handler")
 class Heirarchical_Loss_Handler(Base_Loss_Handler):
     """
-    Loss handler that computes loss heirarchically via two data splits, e.g., by both 
-    source and output. 
+    Loss handler that computes loss heirarchically via two data splits. Useful for cases 
+    in which there are two distinct ways to split data by task that should be handled 
+    differently, e.g., split by source to correct data imbalances then split by output 
+    and balance learning rate of each output.
+    Assumes that each provided loss function corresponds to a separate task with respect 
+    to each loss weighting algorithm. The first provided data split class further 
+    differentiates tasks with respect to the first loss weighting algorithm, and the 
+    same applies to the second data split class and the second loss weighting algorithm.
     """
     def __init__(self, config: dict[any, any]):
         """
@@ -902,9 +928,9 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             raise ValueError(
                 "Heirarchical_Loss_Handler requires exactly two data split classes."
                 )
-        if len(config["LW_alg_classes"]) != 1:
+        if len(config["LW_alg_classes"]) != 2:
             raise ValueError(
-                "Heirarchical_Loss_Handler requires exactly one loss weighting algorithm class."
+                "Heirarchical_Loss_Handler requires exactly two loss weighting algorithm classes."
                 )
         # Instantiate loss functions, data splits, and loss weighting algorithms
         self.loss_functions = nn.ModuleList(
@@ -917,8 +943,69 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
                 config["data_split_classes"], config["data_split_configs"]
             )]
         )
-        # Extract number of splits from the first data split class
-        if not hasattr(self.data_splits[0], "num_splits"):
-            raise ValueError(
-                "First data split class must have 'num_splits' attribute to determine number of splits."
+        # Extract number of splits from each data split class
+        self.num_splits = [data_split.num_splits.item() for data_split in self.data_splits]
+        # Set number of loss terms for each loss weighting algorithm
+        for i in range(len(config["LW_alg_configs"])):
+            config["LW_alg_configs"][i]["num_loss_terms"] = len(self.loss_functions) * self.num_splits[i]
+        # Instantiate the loss weighting algorithms
+        self.loss_weighting_algorithm = [LW_ALG_REGISTRY[config["LW_alg_classes"][i]](**config["LW_alg_configs"][i]) for i in range(len(config["LW_alg_classes"]))]
+        # Instantiate regularizers if provided
+        if "regularizer_classes" in config and "regularizer_configs" in config:
+            self.regularizers = nn.ModuleList(
+                [LOSS_REGISTRY[reg_class](**reg_config) for reg_class, reg_config in zip(
+                    config["regularizer_classes"], config["regularizer_configs"]
+                )]
             )
+
+    def compute_loss_terms(self):
+            """
+            Computes the loss terms for the given data.
+            Args:
+                none
+            Returns:
+                list: List of loss tensors for each loss function and data split.
+            """
+            # Split data into individual components
+            context_splits = self.data_split(self.context)
+            # Initialize list to store losses
+            losses = []
+            # Compute loss for each data split and each loss function
+            for context in context_splits:
+                for loss_fn in self.loss_functions:
+                    loss = loss_fn(context)
+                    losses.append(loss)
+            self.register_buffer("loss_terms", torch.stack(losses))  # Store loss terms
+            return losses  # TODO: Decide whether to return losses or not
+        
+    def update_loss_weights(self):
+        """
+        Updates the loss weights using the loss weighting algorithm.
+        Args:
+            none
+        """
+        if not hasattr(self, "loss_terms"):
+            raise ValueError(
+                "Loss terms have not been computed. Call compute_loss_terms() first."
+            )
+        self.loss_weighting_algorithm.update(self.loss_terms, self.context)
+
+    def compute_loss(self):
+        """
+        Computes the final loss by applying the loss weighting algorithm to the 
+        computed loss terms.
+        Args:
+            none
+        Returns:
+            torch.Tensor: The final weighted loss.
+        """
+        if not hasattr(self, "loss_terms"):
+            raise ValueError(
+                "Loss terms have not been computed. Call compute_loss_terms() first."
+            )
+        weighted_loss = self.loss_weighting_algorithm(self.loss_terms)
+        # Apply regularizers if provided
+        if hasattr(self, "regularizers"):
+            for reg in self.regularizers:
+                weighted_loss += reg(self.context)
+        return weighted_loss
