@@ -820,9 +820,9 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
                 config["loss_function_classes"], config["loss_function_configs"]
             )]
         )
-        self.data_split = DATA_SPLIT_REGISTRY[config["data_split_classes"][0]](**config["data_split_configs"][0])
+        self.data_splits = DATA_SPLIT_REGISTRY[config["data_split_classes"][0]](**config["data_split_configs"][0])
         # Extract number of splits from the data split class
-        self.num_splits = self.data_split.num_splits.item()
+        self.num_splits = self.data_splits.num_splits.item()
         # Add number of loss terms to the config for the loss weighting algorithm
         config["LW_alg_configs"][0]["num_loss_terms"] = len(self.loss_functions) * self.num_splits
         # Instantiate the loss weighting algorithm
@@ -844,7 +844,7 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
             list: List of loss tensors for each loss function and data split.
         """
         # Split data into individual components
-        context_splits = self.data_split(self.context)
+        context_splits = self.data_splits(self.context)
         # Initialize list to store losses
         losses = []
         # Compute loss for each data split and each loss function
@@ -964,23 +964,36 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             Args:
                 none
             Returns:
-                list: List of loss tensors for each loss function and data split.
+                torch.Tensor: Heirarchical list containing a list of loss tensors for each loss 
+                function and data split. Individual loss tensor lists are split by the 
+                second data split, while the lists themselves are split by the first 
+                data split.
             """
-            # Split data into individual components
-            context_splits = self.data_split(self.context)
+            # Split data into individual components heirarchically
+            context_splits = []
+            outer_splits = self.data_splits[1](self.context)  # First data split
+            for context_split in outer_splits:
+                context_splits.append(self.data_splits[0](context_split))  # Second data split
             # Initialize list to store losses
             losses = []
-            # Compute loss for each data split and each loss function
-            for context in context_splits:
-                for loss_fn in self.loss_functions:
-                    loss = loss_fn(context)
-                    losses.append(loss)
-            self.register_buffer("loss_terms", torch.stack(losses))  # Store loss terms
+            # Compute loss heirarchically for each data split and each loss function
+            for context_list in context_splits:
+                losses_list = []
+                for context in context_list:
+                    for loss_fn in self.loss_functions:
+                        loss = loss_fn(context)
+                        losses_list.append(loss)
+                losses.append(torch.stack(losses_list))
+            losses = torch.stack(losses)  # Stack losses by outer split
+            self.register_buffer("loss_terms", losses)  # Store loss terms
             return losses  # TODO: Decide whether to return losses or not
         
     def update_loss_weights(self):
         """
-        Updates the loss weights using the loss weighting algorithm.
+        # TODO: Evaluate whether this is a good strategy for herirarchical loss 
+        # weighting in general. Does this do what I want? Do the same for the 
+        # compute_loss method.
+        Updates the loss weights using the loss weighting algorithms.
         Args:
             none
         """
@@ -988,7 +1001,12 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             raise ValueError(
                 "Loss terms have not been computed. Call compute_loss_terms() first."
             )
-        self.loss_weighting_algorithm.update(self.loss_terms, self.context)
+        # Update inner loss weighting algorithm by summing along the first dimension
+        inner_loss_terms = torch.sum(self.loss_terms, dim=0)
+        self.loss_weighting_algorithm[0].update(inner_loss_terms, self.context)
+        # Update outer loss weighting algorithm by summing along the second dimension
+        outer_loss_terms = torch.sum(self.loss_terms, dim=1)
+        self.loss_weighting_algorithm[1].update(outer_loss_terms, self.context)
 
     def compute_loss(self):
         """
@@ -1003,7 +1021,12 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             raise ValueError(
                 "Loss terms have not been computed. Call compute_loss_terms() first."
             )
-        weighted_loss = self.loss_weighting_algorithm(self.loss_terms)
+        # Apply inner loss weighting algorithm to the loss terms by multiplying 
+        # element-wise through each row of loss terms
+        inner_weighted_loss = self.loss_weighting_algorithm[0].weights * self.loss_terms
+        inner_weighted_loss = torch.sum(inner_weighted_loss, dim=0)
+        # Apply outer loss weighting algorithm
+        weighted_loss = self.loss_weighting_algorithm[1](inner_weighted_loss)
         # Apply regularizers if provided
         if hasattr(self, "regularizers"):
             for reg in self.regularizers:
