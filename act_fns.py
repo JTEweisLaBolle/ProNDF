@@ -41,7 +41,7 @@ def register_act_fn(name):
 
 
 @register_act_fn("Identity")
-class Linear(nn.Identity):
+class Identity(nn.Identity):
     pass
 
 
