@@ -183,3 +183,38 @@ class ProNDF(pl.LightningModule):
         """
         optimizer = OPTIMIZER_REGISTRY[self.hparams.optimizer_type](**self.hparams.optimizer_config)
         return optimizer
+    
+
+def Build_ProNDF(
+    # Data parameters
+    dsource: int,  # the number of data sources
+    dcat: list[int],  # the number of categories for each categorical input
+    dnum: int,  # the dimension of the numerical input
+    dout: int,  # the dimenson of the output
+    qual_in: bool,  # whether qualitative (categorical) inputs are present
+    quant_in: bool,  # whether quantitative (numerical) inputs are present
+    # Architecture and block parameters
+    dz_B1: int = 2,
+    dz_B2: int = 2,
+    architecture: dict[str, list[int]] = {
+        "B1": [8, 4],
+        "B2": [8, 4],
+        "B3": [16, 32, 16, 8],
+        },
+    hidden_act_fn = "Tanh",
+    output_act_fn = "Identity",
+    probabilistic_manifolds = False,
+    probabililistic_output = True,
+    # Optimizer and regularizer params
+    lr: float = 0.001,
+    weight_decay_strength: float = 0.001,
+    # Loss weighting
+    loss_weighting: bool = True,
+):
+    """
+    Streamlined constructor for ProNDF including basic functionality. For more 
+    flexibility and advanced usage, initialize the model directly using the ProNDF 
+    class with appropriate config dictionaries.
+    TODO: Finish docstring
+    """
+    
