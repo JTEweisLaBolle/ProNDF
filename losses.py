@@ -94,12 +94,14 @@ def register_loss(name):
 
 
 # Loss context object to store model parameters/outputs to be accessed by loss classes.
-@register_loss("Loss_Context")
+@register_loss("Loss_Context")  # TODO: Loss context is never used outside of loss handlers - do I need to include it in a registry?
 class Loss_Context(nn.Module):
     """
     Context object for losses. Stores model parameters and outputs to be accessed by 
     loss classes.
-    User can add more objects to the context if future loss classes require them.
+    User can add more objects to the context if future loss classes require them (for 
+    example, adding a probabilistic block's output parameters if they are needed 
+    directly for, e.g., a regularizer)
     """
     def __init__(self, model, batch, outputs):
         """
@@ -853,7 +855,7 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
                 loss = loss_fn(context)
                 losses.append(loss)
         self.register_buffer("loss_terms", torch.stack(losses))  # Store loss terms
-        return losses  # TODO: Decide whether to return losses or not
+        # return losses  # TODO: Decide whether to return losses or not
     
     def update_loss_weights(self):
         """

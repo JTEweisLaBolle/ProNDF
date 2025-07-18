@@ -10,6 +10,9 @@ from torch.nn import functional as F
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import warnings
+from .blocks import BLOCK_REGISTRY
+from .losses import LOSS_HANDLER_REGISTRY
+from .optimizers import OPTIMIZER_REGISTRY
 
 
 class ProNDF(pl.LightningModule):
@@ -22,52 +25,31 @@ class ProNDF(pl.LightningModule):
     """
     def __init__(
         self,
-        dsource: int,  # the number of sources
-        dcat: list[int],
-        dnum: int,
-        dy: int,
-        qual_in: bool,
-        quant_in: bool,
-        B1_type: str,
-        B1_params: dict[str, any],
-        B2_type: str,
-        B2_params: dict[str, any],
-        B3_type: str,
-        B3_params: dict[str, any],
-        Bias_type: str,
-        Bias_params: dict[str, any],
-        # dz_B0: int = 2,  # TODO: Pass things like this to a constructor instead of the model
-        # dz_B1: int = 2,
-        # architecture: dict[str, list[int]] = {  # TODO: Decide on whether we should include bias
-        #     "Bias": [8, 4],  # TODO: Decide on whether we should allow the user to construct the architecture differently... Currently we're trying to make this as plug-and-play as possible, but that may not be the best approach
-        #     "B0": [8, 4],
-        #     "B1": [8, 4],
-        #     "B3": [16, 32, 16, 8],
+        # Data parameters
+        dsource: int,  # the number of data sources
+        dcat: list[int],  # the number of categories for each categorical input
+        dnum: int,  # the dimension of the numerical input
+        dout: int,  # the dimenson of the output
+        qual_in: bool,  # whether qualitative (categorical) inputs are present
+        quant_in: bool,  # whether quantitative (numerical) inputs are present
+        # Block / architecture parameters
+        B1_type: str,  # Source block
+        B1_config: dict[str, any],  # Block 1 parameters
+        B2_type: str,  # Categorical block
+        B2_config: dict[str, any],  # Block 2 parameters
+        B3_type: str,  # Input-output relationship
+        B3_config: dict[str, any],  # Block 3 parameters
+        # Training parameters such as loss function, optimizer, and regularizers
+        loss_handler_type: str,  # Loss handler to use
+        loss_handler_config: dict[str, any],  # Loss handler config including loss functions and regularizers
+        optimizer_type: str,  # Optimizer choice
+        optimizer_config: dict[str, any],  # Optimizer configuration
+        # Logging and other misc
+        # log_plots: dict[str, bool | int] = {  # TODO: Figure out how to do logging. Should this be done via a "logger" class? Most likely yes.
+        #     "true_pred": True,
+        #     "source_LS": True,
+        #     "freq": 1000,
         # },
-        # var_init_bounds: list[float] = [-5.0, -3.0],  # TODO: Use an initializer object in the calibration version?
-        # act_fn: nn.functional = nn.Tanh(),  # TODO: Should this be included in the architecture dict instead?
-        lr: float = 0.001,  # TODO: Should bundle all of the parameters associated with training into a trainer class instead of passing them here. Current setup constrains the model to be used only with regression. We want it to be usable on classification, etc. as well.
-        k_L2: float = 0.01,
-        k_KL: float = 0.01,
-        k_IS: float = 1.0,
-        KL_prior=0.1,
-        # alpha1: float = 0.9,  # TODO: Pass a loss-weighting class object (or None) rather than these parameters. Allows for more modularity.
-        # alpha2: float = 0.999,
-        add_bias: bool = False,  # TODO: Make it more clear that this addresses the data fusion scheme (bias vs no bias) rather than bias in NN blocks(i.e., weights and biases)
-        prob_bias: bool = True,  # TODO: Perhaps the user should create each block separately and then pass them to the model individually rather than having the model construct them. This would reduce the number of parameters passed to the model and allow for more flexibility in the architecture.
-        prob_B0: bool = False,
-        prob_B1: bool = False,
-        prob_B2: bool = False,
-        prob_out: bool = True,
-        num_realizations: int = 1,  # TODO: Again, this should be addressed in each block individually. Do not want to have this hardcoded as is currently is. (Actually just remove it)
-        loss_fn: str = "NLL",  # TODO: Should probably pass a loss function class object rather than a string. This would allow for more flexibility in the loss function used.
-        loss_weighting: bool = True,  # TODO: Pass a loss weighting class rather than a string.
-        loss_weight_ref_idx: int = 0,  # TODO: See above
-        log_plots: dict[str, bool | int] = {  # TODO: Should this even be included? Definitely should have this done in a non-hardcoded way.
-            "true_pred": True,
-            "source_LS": True,
-            "freq": 1000,
-        },
     ):
         """
         TODO: Add docstring for __init__
@@ -76,4 +58,128 @@ class ProNDF(pl.LightningModule):
         # TODO: Add sanity checks for inputs, warnings, etc.
         # Save parameters
         self.save_hyperparameters()
-        # Build blocks
+        # Build blocks and loss handler
+        # Build source block
+        self.B1 = BLOCK_REGISTRY[B1_type(**B1_config)]
+        # Build categorical block if necessary
+        if qual_in:
+            self.B2 = BLOCK_REGISTRY[B2_type(**B2_config)]
+        # Build input-output block
+        self.B3 = BLOCK_REGISTRY[B3_type(**B3_config)]
+        # Build loss handler
+        self.loss_handler = LOSS_HANDLER_REGISTRY[loss_handler_type(**loss_handler_config)]
+
+    def forward(self, batch):
+        """
+        Performs a basic forward pass through the model, returning a tensor (sampled 
+        from the output distribution if block 3 is probabilistic).
+        TODO: Finish docstring
+        """
+        source, cat, num, out = batch
+        # Get source manifold
+        z_B1 = self.B1(source)
+        # Get categorical manifold if necessary
+        if self.hparams.qual_in:
+            z_B2 = self.B2(cat)
+        # Concatenate as necessary and pass through block 3
+        # Checks to avoid iterative torch.cat operations
+        if self.hparams.qual_in and self.hparams.quant_in:  # Both qual and quant inputs
+            u = torch.cat((z_B1, z_B2, num), dim = -1)  # u is combined input
+        elif self.hparams.qual_in:  # Only qual inputs
+            u = torch.cat((z_B1, z_B2), dim = -1)  # u is combined input
+        else:  # Only quant inputs
+            u = torch.cat((z_B1, num), dim = -1)  # u is combined input
+        out = self.B3(u)
+        return out
+        
+    def get_model_outputs(self, batch):
+        """
+        Builds output dictionary for use in loss handling / loss context object
+        TODO: Finish docstring
+        """
+        source, cat, num, out = batch
+        outputs = {}
+        # Get source manifold
+        B1_outputs = {}
+        z_B1 = self.B1(source)  # u is combined input to be concatenated
+        B1_outputs["out"] = z_B1
+        if self.B1.probabilistic_output:
+            z_B1_dist = self.B1.predict_distribution(source)
+            B1_outputs["out_dist"] = z_B1_dist
+        outputs["B1"] = B1_outputs
+        # Get categorical manifold if necessary
+        if self.hparams.qual_in:
+            B2_outputs = {}
+            z_B2 = self.B2(cat)
+            B2_outputs["out"] = z_B2
+            if self.B2.probabilistic_output:
+                z_B2_dist = self.B2.predict_distribution(cat)
+                B2_outputs["out_dist"] = z_B2_dist
+            outputs["B2"] = B2_outputs
+        # Concatenate as necessary and pass through block 3
+        # Checks to avoid iterative torch.cat operations
+        if self.hparams.qual_in and self.hparams.quant_in:  # Both qual and quant inputs
+            u = torch.cat((z_B1, z_B2, num), dim = -1)
+        elif self.hparams.qual_in:  # Only qual inputs
+            u = torch.cat((z_B1, z_B2), dim = -1)
+        else:  # Only quant inputs
+            u = torch.cat((z_B1, num), dim = -1)
+        B3_outputs = {}
+        out = self.B3(u)
+        B3_outputs["out"] = out
+        if self.B3.probabilistic_output:
+            z_B3_dist = self.B3.predict_distribution(u)
+            B3_outputs["out_dist"] = z_B3_dist
+        outputs["B3"] = B3_outputs
+        return outputs
+
+    def training_step(self, batch, batch_idx):
+        """
+        Model forward pass, loss term calculations, and loss weight updates
+        """
+        # Get model outputs
+        outputs = self.get_model_outputs(batch)
+        # Build loss context
+        self.loss_handler.build_loss_context(self, batch, outputs)
+        # Compute loss terms for weighting
+        self.loss_handler.compute_loss_terms()
+        # Update loss weights
+        self.loss_handler.update_loss_weights()
+        # Compute final loss
+        loss = self.loss_handler.compute_loss()
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        """
+        Model forward pass and loss term calculations. No loss weight updates
+        """
+        # Get model outputs
+        outputs = self.get_model_outputs(batch)
+        # Build loss context
+        self.loss_handler.build_loss_context(self, batch, outputs)
+        # Compute loss terms for weighting
+        self.loss_handler.compute_loss_terms()
+        # Compute final loss
+        loss = self.loss_handler.compute_loss()
+        return loss
+    
+    def test_step(self, batch, batch_idx):
+        """
+        Model forward pass and loss term calculations. No loss weight updates
+        """
+        # Get model outputs
+        outputs = self.get_model_outputs(batch)
+        # Build loss context
+        self.loss_handler.build_loss_context(self, batch, outputs)
+        # Compute loss terms for weighting
+        self.loss_handler.compute_loss_terms()
+        # Compute final loss including regularization
+        loss = self.loss_handler.compute_loss()
+        return loss
+    
+    def configure_optimizers(self):
+        """
+        Initializes and configures optimizers using provided parameters
+        """
+        optimizer = OPTIMIZER_REGISTRY[self.hparams.optimizer_type](**self.hparams.optimizer_config)
+        return optimizer
