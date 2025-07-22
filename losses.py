@@ -1037,6 +1037,7 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
     
 
 # TODO: Should we include a "build loss handler" function that does a simplified construction process similar to the constructor for ProNDF?
+# TODO: ^^ Likely sufficient to include some examples instead.
 # def Build_Loss_Handler(
 #     # Data and model parameters
 #     dsource: int,
