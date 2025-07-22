@@ -208,13 +208,114 @@ def Build_ProNDF(
     # Optimizer and regularizer params
     lr: float = 0.001,
     weight_decay_strength: float = 0.001,
+    regularizer_strength: float = 0.1,
     # Loss weighting
-    loss_weighting: bool = True,
+    loss_weighting: bool = True,  # TODO: Maybe add more options here? ATM it's full-on heirarchical loss weighting or nothing...
+    # TODO: Add logging functionality later
 ):
     """
     Streamlined constructor for ProNDF including basic functionality. For more 
     flexibility and advanced usage, initialize the model directly using the ProNDF 
     class with appropriate config dictionaries.
     TODO: Finish docstring
+    TODO: Decide whether to build loss handler manually or with a constructor
     """
-    
+    # Build configs for each model component
+    # Blocks 1 and 2 types
+    if probabilistic_manifolds:
+        B1_type = "Prob_Block"
+        B2_type = "Prob_Block"
+    else:
+        B1_type = "Det_Block"
+        B2_type = "Det_Block"
+    # Block 3 type
+    if probabililistic_output:
+        B3_type = "Prob_Block"
+    else:
+        B3_type = "Det_Block"
+    # Blocks 1 and 2 configs
+    B1_config = {
+        "d_in": dsource,
+        "d_out": dz_B1,
+        "hidden_layers": architecture["B1"],
+        "hidden_act_fn": hidden_act_fn,
+        "output_act_fn": "Identity",
+    }
+    B2_config = {
+        "d_in": sum(dcat),
+        "d_out": dz_B2,
+        "hidden_layers": architecture["B2"],
+        "hidden_act_fn": hidden_act_fn,
+        "output_act_fn": "Identity",
+    }
+    # Block 3 config
+    if qual_in and quant_in:  # Get combined input dimensionality
+        d_u = dz_B1 + dz_B2 + dnum
+    elif qual_in:
+        d_u = dz_B1 + dz_B2
+    else:
+        d_u = dz_B1 + dnum
+    B3_config = {
+        "d_in": d_u,
+        "d_out": dout,
+        "hidden_layers": architecture["B3"],
+        "hidden_act_fn": hidden_act_fn,
+        "output_act_fn": output_act_fn,
+    }
+    # Loss functions and regularizers
+    if probabililistic_output:
+        loss_function_classes = ["Output_NLL_loss"]
+        loss_function_configs = [{}]
+        regularizer_classes = ["Output_IS_loss"]
+        regularizer_configs = [{"alpha": 0.05, "strength": regularizer_strength}]
+    else:
+        loss_function_classes = ["Output_MSE_loss"]
+        loss_function_configs = [{}]
+        regularizer_classes = []
+        regularizer_configs = []
+    # Data splits and loss-weighting algorithms
+    if loss_weighting:
+        data_split_classes = ["Split_by_Source", "Split_by_Output"]
+        data_split_configs = [{"num_sources": dsource}, {"num_outputs": dout}]
+        LW_alg_classes = ["Fixed_Weights", "Two_Moment_Weighting"]
+        LW_alg_configs = [{"num_loss_terms": dsource}, {"num_loss_terms": dout}]
+        loss_handler_type = "Heirarchical_Loss_Handler"
+    else:
+        data_split_classes = ["No_Split"]
+        data_split_configs = [{}]
+        LW_alg_classes = ["No_Weighting"]
+        LW_alg_configs = [{}]
+        loss_handler_type = "One_Stage_Loss_Handler"
+    # Build loss handler config
+    loss_handler_config = {
+            "loss_function_classes": loss_function_classes,
+            "loss_function_configs": loss_function_configs,
+            "data_split_classes": data_split_classes,
+            "data_split_configs": data_split_configs,
+            "LW_alg_classes": LW_alg_classes,
+            "LW_alg_configs": LW_alg_configs,
+            "regularizer_classes": regularizer_classes,
+            "regularizer_configs": regularizer_configs,
+        }
+    # Optimizer type and config
+    optimizer_type = "Adam"
+    optimizer_config = {"lr": lr, "weight_decay": weight_decay_strength}
+    # Build model
+    model = ProNDF(
+        dsource = dsource,
+        dcat = dcat,
+        dnum = dnum,
+        qual_in = qual_in,
+        quant_in = quant_in,
+        B1_type = B1_type,
+        B1_config = B1_config,
+        B2_type = B2_type,
+        B2_config = B2_config,
+        B3_type = B3_type,
+        B3_config = B3_config,
+        loss_handler_type = loss_handler_type,
+        loss_handler_config = loss_handler_config,
+        optimizer_type = optimizer_type,
+        optimizer_config = optimizer_config,
+    )
+    return model

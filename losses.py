@@ -585,7 +585,7 @@ class Two_Moment_Weighting(Base_LW_alg):
     (2014).
     """
 
-    def __init__(self, num_loss_terms, ref_idx=0, alpha1=0.9, alpha2=0.999, eps=1e-8):
+    def __init__(self, num_loss_terms: int, ref_idx: int = 0, alpha1: float = 0.9, alpha2: float = 0.999, eps: float = 1e-8):
         """
         Initializes the Two_Moment_Weighting loss weighting algorithm.
         Args:
@@ -1034,3 +1034,18 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             for reg in self.regularizers:
                 weighted_loss += reg(self.context)
         return weighted_loss
+    
+
+# TODO: Should we include a "build loss handler" function that does a simplified construction process similar to the constructor for ProNDF?
+# def Build_Loss_Handler(
+#     # Data and model parameters
+#     dsource: int,
+#     dout: int,
+#     probabilistic_output: bool,
+#     # Loss function parameters
+#     loss_function_classes: list[str],
+#     regularizer_classes: list[str]
+#     LW_alg_classes: list[str],
+#     heirarchical_weighting: bool = True,
+    
+# ):
