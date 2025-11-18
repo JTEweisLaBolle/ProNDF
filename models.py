@@ -60,14 +60,14 @@ class ProNDF(pl.LightningModule):
         self.save_hyperparameters()
         # Build blocks and loss handler
         # Build source block
-        self.B1 = BLOCK_REGISTRY[B1_type(**B1_config)]
+        self.B1 = BLOCK_REGISTRY[B1_type](**B1_config)
         # Build categorical block if necessary
         if qual_in:
-            self.B2 = BLOCK_REGISTRY[B2_type(**B2_config)]
+            self.B2 = BLOCK_REGISTRY[B2_type](**B2_config)
         # Build input-output block
-        self.B3 = BLOCK_REGISTRY[B3_type(**B3_config)]
+        self.B3 = BLOCK_REGISTRY[B3_type](**B3_config)
         # Build loss handler
-        self.loss_handler = LOSS_HANDLER_REGISTRY[loss_handler_type(**loss_handler_config)]
+        self.loss_handler = LOSS_HANDLER_REGISTRY[loss_handler_type](**loss_handler_config)
 
     def forward(self, batch):
         """
@@ -275,11 +275,11 @@ def Build_ProNDF(
         regularizer_configs = []
     # Data splits and loss-weighting algorithms
     if loss_weighting:
-        data_split_classes = ["Split_by_Source", "Split_by_Output"]
+        data_split_classes = ["Split_by_Source", "Split_by_Output_Dim"]
         data_split_configs = [{"num_sources": dsource}, {"num_outputs": dout}]
         LW_alg_classes = ["Fixed_Weights", "Two_Moment_Weighting"]
         LW_alg_configs = [{"num_loss_terms": dsource}, {"num_loss_terms": dout}]
-        loss_handler_type = "Heirarchical_Loss_Handler"
+        loss_handler_type = "Hierarchical_Loss_Handler"
     else:
         data_split_classes = ["No_Split"]
         data_split_configs = [{}]

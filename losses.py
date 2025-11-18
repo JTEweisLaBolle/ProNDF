@@ -184,7 +184,7 @@ class Output_MSE_loss(Base_Loss):
         Returns:
             torch.Tensor: The computed loss.
         """
-        if not self.hasattr("probabilistic_output"):
+        if not hasattr(self, "probabilistic_output"):
             self.probabilistic_output = context.model.B3.probabilistic_output
         targets = context.batch[-1]  # Targets should be the last element in the batch
         if self.probabilistic_output:
@@ -216,7 +216,7 @@ class Output_NLL_loss(Base_Loss):
         Args:
             None
         """
-        super(NLL_loss, self).__init__()
+        super(Output_NLL_loss, self).__init__()
         self.requires_probabilistic_output = True
 
     def forward(self, context: Loss_Context) -> torch.Tensor:
@@ -365,6 +365,7 @@ class No_Split(Base_Data_Split):
     """
     def __init__(self):
         super(No_Split, self).__init__()
+        self.register_buffer("num_splits", torch.tensor(1))
 
     def forward(self, context: Loss_Context) -> list[Loss_Context]:
         """
@@ -622,7 +623,7 @@ class Two_Moment_Weighting(Base_LW_alg):
             optimizer: Model optimizer from which to extract information.
         """
         parameters = list(context.model.parameters())
-        step = context.model.step if hasattr(context.model.global_step, 'step') else 0
+        step = context.model.global_step if hasattr(context.model, 'global_step') else 0
         # Obtain the reference loss gradients, etc.
         ref_loss = loss_terms[self.ref_idx]
         ref_grads = torch.autograd.grad(
@@ -832,7 +833,7 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
         # Instantiate regularizers if provided
         if "regularizer_classes" in config and "regularizer_configs" in config:
             self.regularizers = nn.ModuleList(
-                [LOSS_REGISTRY[reg_class](**reg_config) for reg_class, reg_config in zip(
+                [LOSS_REGISTRY[reg_class](**reg_cfg) for reg_class, reg_cfg in zip(
                     config["regularizer_classes"], config["regularizer_configs"]
                 )]
             )
@@ -891,10 +892,10 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
         return weighted_loss
 
 
-@register_loss_handler("Heirarchical_Loss_Handler")
-class Heirarchical_Loss_Handler(Base_Loss_Handler):
+@register_loss_handler("Hierarchical_Loss_Handler")
+class Hierarchical_Loss_Handler(Base_Loss_Handler):
     """
-    Loss handler that computes loss heirarchically via two data splits. Useful for cases 
+    Loss handler that computes loss hierarchically via two data splits. Useful for cases 
     in which there are two distinct ways to split data by task that should be handled 
     differently, e.g., split by source to correct data imbalances then split by output 
     and balance learning rate of each output.
@@ -905,17 +906,17 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
     """
     def __init__(self, config: dict[any, any]):
         """
-        Initializes the Heirarchical_Loss_Handler with a configuration object.
+        Initializes the Hierarchical_Loss_Handler with a configuration object.
         Config object should contain the following entries:
             - loss_function_classes (list): List of loss function class names to use.
             - loss_function_configs (list): List of configuration dictionaries for each 
                 loss function.
             - data_split_classes (list): List of data splitting class names to use. 
-                Should contain two classes for heirarchical splitting.
+                Should contain two classes for hierarchical splitting.
             - data_split_configs (list): List of configuration dictionaries for each 
                 data splitting class.
             - LW_alg_classes (list): List of loss weighting algorithm class names to 
-                use. Should contain two classes for heirarchical splitting, 
+                use. Should contain two classes for hierarchical splitting, 
                 corresponding to the two splits.
             - LW_alg_configs (list): List of configuration dictionaries for each loss 
                 weighting algorithm.
@@ -924,24 +925,24 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             - regularizer_configs (list, optional): List of configuration dictionaries 
                 for each regularizer class.
         """
-        super(Heirarchical_Loss_Handler, self).__init__()
+        super(Hierarchical_Loss_Handler, self).__init__()
         # Check that there are two data splits and one loss weighting algorithm
         if len(config["data_split_classes"]) != 2:
             raise ValueError(
-                "Heirarchical_Loss_Handler requires exactly two data split classes."
+                "Hierarchical_Loss_Handler requires exactly two data split classes."
                 )
         if len(config["LW_alg_classes"]) != 2:
             raise ValueError(
-                "Heirarchical_Loss_Handler requires exactly two loss weighting algorithm classes."
+                "Hierarchical_Loss_Handler requires exactly two loss weighting algorithm classes."
                 )
         # Instantiate loss functions, data splits, and loss weighting algorithms
         self.loss_functions = nn.ModuleList(
-            [LOSS_REGISTRY[loss_fn_class](**config) for loss_fn_class, config in zip(
+            [LOSS_REGISTRY[loss_fn_class](**loss_config) for loss_fn_class, loss_config in zip(
                 config["loss_function_classes"], config["loss_function_configs"]
             )]
         )
         self.data_splits = nn.ModuleList(
-            [DATA_SPLIT_REGISTRY[data_split_class](**config) for data_split_class, config in zip(
+            [DATA_SPLIT_REGISTRY[data_split_class](**split_config) for data_split_class, split_config in zip(
                 config["data_split_classes"], config["data_split_configs"]
             )]
         )
@@ -955,7 +956,7 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
         # Instantiate regularizers if provided
         if "regularizer_classes" in config and "regularizer_configs" in config:
             self.regularizers = nn.ModuleList(
-                [LOSS_REGISTRY[reg_class](**reg_config) for reg_class, reg_config in zip(
+                [LOSS_REGISTRY[reg_class](**reg_cfg) for reg_class, reg_cfg in zip(
                     config["regularizer_classes"], config["regularizer_configs"]
                 )]
             )
@@ -966,19 +967,19 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
             Args:
                 none
             Returns:
-                torch.Tensor: Heirarchical list containing a list of loss tensors for each loss 
+                torch.Tensor: Hierarchical list containing a list of loss tensors for each loss 
                 function and data split. Individual loss tensor lists are split by the 
                 second data split, while the lists themselves are split by the first 
                 data split.
             """
-            # Split data into individual components heirarchically
+            # Split data into individual components hierarchically
             context_splits = []
             outer_splits = self.data_splits[1](self.context)  # First data split
             for context_split in outer_splits:
                 context_splits.append(self.data_splits[0](context_split))  # Second data split
             # Initialize list to store losses
             losses = []
-            # Compute loss heirarchically for each data split and each loss function
+            # Compute loss hierarchically for each data split and each loss function
             for context_list in context_splits:
                 losses_list = []
                 for context in context_list:
@@ -992,7 +993,7 @@ class Heirarchical_Loss_Handler(Base_Loss_Handler):
         
     def update_loss_weights(self):
         """
-        # TODO: Evaluate whether this is a good strategy for herirarchical loss 
+        # TODO: Evaluate whether this is a good strategy for hierarchical loss 
         # weighting in general. Does this do what I want? Do the same for the 
         # compute_loss method.
         Updates the loss weights using the loss weighting algorithms.

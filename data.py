@@ -15,11 +15,11 @@ be loaded.
 # Utility functions such as data normalization, etc. (should these go in eiher utils.py or in the dataset class instead?)
 # Start with the dataset class
 
+from __future__ import annotations
 import torch
 import numpy as np
 from scipy.stats import qmc
 from torch.utils.data import Dataset, DataLoader
-from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
@@ -86,7 +86,7 @@ class MultiSourceDataset(Dataset):
         NOTE: Complete after we decide what should go in the metadata.
         NOTE: Should we be using a folder path or a file path? Ideally I'd like to pass just a folder, but that might be too much abstraction.
         """
-        pass
+        
 
     def save(self, path):
         """

@@ -129,8 +129,8 @@ class Det_Block(Base_Block):
         architecture = nn.Sequential(*Block)
         for layer in architecture:  # Initialize via Xavier uniform
             if isinstance(layer, nn.Linear):
-                torch.nn.initxavier_uniform_(layer.weight)
-                torch.nn.initzeros_(layer.bias)  # Initialize biases to zero
+                torch.nn.init.xavier_uniform_(layer.weight)
+                torch.nn.init.zeros_(layer.bias)  # Initialize biases to zero
         self.architecture = architecture
 
     def forward(self, x):
@@ -200,8 +200,8 @@ class Prob_Block(Base_Block):
         architecture = nn.Sequential(*Block)
         for layer in architecture:  # Initialize via Xavier uniform
             if isinstance(layer, nn.Linear):
-                torch.nn.initxavier_uniform_(layer.weight)
-                torch.nn.initzeros_(layer.bias)  # Initialize biases to zero
+                torch.nn.init.xavier_uniform_(layer.weight)
+                torch.nn.init.zeros_(layer.bias)  # Initialize biases to zero
         self.architecture = architecture
 
     def forward(self, x):
