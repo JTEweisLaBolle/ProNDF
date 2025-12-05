@@ -75,7 +75,7 @@ class ProNDF(pl.LightningModule):
         from the output distribution if block 3 is probabilistic).
         TODO: Finish docstring
         """
-        source, cat, num, out = batch
+        source, cat, num, targets = batch
         # Get source manifold
         z_B1 = self.B1(source)
         # Get categorical manifold if necessary
@@ -97,7 +97,7 @@ class ProNDF(pl.LightningModule):
         Builds output dictionary for use in loss handling / loss context object
         TODO: Finish docstring
         """
-        source, cat, num, out = batch
+        source, cat, num, targets = batch
         outputs = {}
         # Get source manifold
         B1_outputs = {}
