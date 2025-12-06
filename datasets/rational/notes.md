@@ -31,9 +31,11 @@ This is a single-input dataset:
 This dataset includes one high-fidelity source and three low-fidelity approximations:
 
 1. **yh (High-Fidelity)**: Full cubic rational function with coefficient 0.1 for x³
-2. **yl1 (Low-Fidelity 1)**: Modified with coefficient 0.2 for x³ instead of 0.1
-3. **yl2 (Low-Fidelity 2)**: Simplified by removing cubic term entirely
-4. **yl3 (Low-Fidelity 3)**: Further simplified by removing both cubic and linear terms
+2. **yl1 (Low-Fidelity 1)**: Modified with coefficient 0.2 for x³ instead of 0.1, RRMSE of 0.23 relative to high-fidelity source
+3. **yl2 (Low-Fidelity 2)**: Simplified by removing cubic term entirely, RRMSE of 0.15 relative to high-fidelity source
+4. **yl3 (Low-Fidelity 3)**: Further simplified by removing both cubic and linear terms, RRMSE of 0.73 relative to high-fidelity source
+
+Where RRMSE (relative root mean squared error) is measured on 10,000 random test samples and indicates accuracy of the low-fidelity source in modeling the high-fidelity source.
 
 The progression of low-fidelity approximations demonstrates systematic simplification of the polynomial structure, making this useful for testing how multi-fidelity methods handle varying degrees of model discrepancy.
 

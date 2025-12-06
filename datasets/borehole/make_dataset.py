@@ -64,7 +64,7 @@ dataset = data.Generate_Analytic_Dataset(
 dataset.save(save_path, "borehole_dataset")
 
 # Load dataset
-dataset = data.MultiSourceDataset.load(save_path, "borehole_dataset")
+dataset = data.MultiFidelityDataset.load(save_path, "borehole_dataset")
 
 # Split dataset
 split_ratios = [15/2100, 6/2100, 0.99]

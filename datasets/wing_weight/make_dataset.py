@@ -74,7 +74,7 @@ dataset = data.Generate_Analytic_Dataset(
 dataset.save(save_path, "wing_weight_dataset")
 
 # Load dataset
-dataset = data.MultiSourceDataset.load(save_path, "wing_weight_dataset")
+dataset = data.MultiFidelityDataset.load(save_path, "wing_weight_dataset")
 
 # Split dataset
 split_ratios = [15/2100, 6/2100, 0.99]

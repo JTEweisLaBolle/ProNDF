@@ -19,7 +19,7 @@ from __future__ import annotations
 import torch
 import numpy as np
 from scipy.stats import qmc
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, TypedDict
 import json
@@ -31,7 +31,7 @@ from pathlib import Path
 # Dataset metadata type definition
 class DatasetMeta(TypedDict, total=False):
     """
-    Metadata dictionary for MultiSourceDataset.
+    Metadata dictionary for MultiFidelityDataset.
     
     All fields are optional (total=False), allowing users to provide only the
     metadata they need. Currently used fields:
@@ -53,7 +53,7 @@ class DatasetMeta(TypedDict, total=False):
 
 # Main dataset class
 
-class MultiSourceDataset(Dataset):
+class MultiFidelityDataset(Dataset):
     """
     # NOTE: Add docstring later. For now, let's list intended behaviors:
     # NOTE: Write plotting code to take dataset objects as inputs
@@ -71,7 +71,7 @@ class MultiSourceDataset(Dataset):
             targets: np.ndarray = None,
             meta: DatasetMeta = {},
     ):
-        super(MultiSourceDataset, self).__init__()
+        super(MultiFidelityDataset, self).__init__()
         # Store parameters
         self.source = source
         self.cat = cat
@@ -95,11 +95,20 @@ class MultiSourceDataset(Dataset):
             sample: a dict containing the sample data.
             Keys: source, cat, num, targets
         """
-        source_sample = self.source[idx, :]
-        targets_sample = self.targets[idx, :]
+        source_sample = torch.tensor(self.source[idx, :], dtype=torch.float32)
+        targets_sample = torch.tensor(self.targets[idx, :], dtype=torch.float32)
         # Retrieve samples from categorical and numerical inputs if they exist
-        cat_sample = self.cat[idx, :] if self.qual_in else torch.empty_like(targets_sample)
-        num_sample = self.num[idx, :] if self.quant_in else torch.empty_like(targets_sample)
+        # When qual_in/quant_in are False, create empty tensors with 0 features (not same shape as targets)
+        if self.qual_in and self.cat is not None:
+            cat_sample = torch.tensor(self.cat[idx, :], dtype=torch.float32)
+        else:
+            # Create empty tensor with 0 features (shape: (0,))
+            cat_sample = torch.empty(0, dtype=torch.float32)
+        if self.quant_in and self.num is not None:
+            num_sample = torch.tensor(self.num[idx, :], dtype=torch.float32)
+        else:
+            # Create empty tensor with 0 features (shape: (0,))
+            num_sample = torch.empty(0, dtype=torch.float32)
         out = {
             'source': source_sample,
             'cat': cat_sample,
@@ -163,7 +172,7 @@ class MultiSourceDataset(Dataset):
             json.dump(serializable_meta, f, indent=2)
     
     @classmethod
-    def load(cls, folder_path: str | Path, filename: str) -> "MultiSourceDataset":
+    def load(cls, folder_path: str | Path, filename: str) -> "MultiFidelityDataset":
         """
         Loads a dataset from disk.
         
@@ -174,7 +183,7 @@ class MultiSourceDataset(Dataset):
             filename: Base filename (without extension) used when saving.
         
         Returns:
-            A MultiSourceDataset object with the loaded data and metadata.
+            A MultiFidelityDataset object with the loaded data and metadata.
         
         Raises:
             FileNotFoundError: If required files are not found.
@@ -253,7 +262,7 @@ class MultiSourceDataset(Dataset):
 
 
 # Function to split a dataset into train, validation, and test sets
-def split_dataset(dataset: MultiSourceDataset, split_ratios: list[float]) -> tuple[MultiSourceDataset, MultiSourceDataset, MultiSourceDataset]:
+def split_dataset(dataset: MultiFidelityDataset, split_ratios: list[float]) -> tuple[MultiFidelityDataset, MultiFidelityDataset, MultiFidelityDataset]:
     """
     Splits a dataset into train, validation, and test sets.
     
@@ -262,12 +271,12 @@ def split_dataset(dataset: MultiSourceDataset, split_ratios: list[float]) -> tup
     sources across the splits.
     
     Args:
-        dataset: The MultiSourceDataset to split.
+        dataset: The MultiFidelityDataset to split.
         split_ratios: A list of 3 floats [train_ratio, val_ratio, test_ratio] that
             must sum to 1.0. For example, [0.7, 0.2, 0.1] for 70% train, 20% val, 10% test.
     
     Returns:
-        A tuple of three MultiSourceDataset objects: (train_dataset, val_dataset, test_dataset).
+        A tuple of three MultiFidelityDataset objects: (train_dataset, val_dataset, test_dataset).
         Each dataset has updated metadata with num_samples reflecting the split for each source.
     
     Example:
@@ -362,7 +371,7 @@ def split_dataset(dataset: MultiSourceDataset, split_ratios: list[float]) -> tup
     test_meta['num_samples'] = test_num_samples
     
     # Create new dataset objects
-    train_dataset = MultiSourceDataset(
+    train_dataset = MultiFidelityDataset(
         source=train_source,
         cat=train_cat,
         num=train_num,
@@ -370,7 +379,7 @@ def split_dataset(dataset: MultiSourceDataset, split_ratios: list[float]) -> tup
         meta=train_meta
     )
     
-    val_dataset = MultiSourceDataset(
+    val_dataset = MultiFidelityDataset(
         source=val_source,
         cat=val_cat,
         num=val_num,
@@ -378,7 +387,7 @@ def split_dataset(dataset: MultiSourceDataset, split_ratios: list[float]) -> tup
         meta=val_meta
     )
     
-    test_dataset = MultiSourceDataset(
+    test_dataset = MultiFidelityDataset(
         source=test_source,
         cat=test_cat,
         num=test_num,
@@ -390,9 +399,9 @@ def split_dataset(dataset: MultiSourceDataset, split_ratios: list[float]) -> tup
 
 
 def save_splits(
-    train_dataset: MultiSourceDataset,
-    val_dataset: MultiSourceDataset,
-    test_dataset: MultiSourceDataset,
+    train_dataset: MultiFidelityDataset,
+    val_dataset: MultiFidelityDataset,
+    test_dataset: MultiFidelityDataset,
     folder_path: str | Path,
     filename: str
 ) -> None:
@@ -426,7 +435,7 @@ def save_splits(
 def load_splits(
     folder_path: str | Path,
     filename: str
-) -> tuple[MultiSourceDataset, MultiSourceDataset, MultiSourceDataset]:
+) -> tuple[MultiFidelityDataset, MultiFidelityDataset, MultiFidelityDataset]:
     """
     Loads train, validation, and test dataset splits from disk.
     
@@ -439,7 +448,7 @@ def load_splits(
             have _train, _val, or _test appended to this base name.
     
     Returns:
-        A tuple of three MultiSourceDataset objects: (train_dataset, val_dataset, test_dataset).
+        A tuple of three MultiFidelityDataset objects: (train_dataset, val_dataset, test_dataset).
     
     Raises:
         FileNotFoundError: If any required files are not found.
@@ -452,9 +461,9 @@ def load_splits(
         # ./data/my_dataset_val_source.npy, ./data/my_dataset_val_targets.npy, etc.
         # ./data/my_dataset_test_source.npy, ./data/my_dataset_test_targets.npy, etc.
     """
-    train_dataset = MultiSourceDataset.load(folder_path, f"{filename}_train")
-    val_dataset = MultiSourceDataset.load(folder_path, f"{filename}_val")
-    test_dataset = MultiSourceDataset.load(folder_path, f"{filename}_test")
+    train_dataset = MultiFidelityDataset.load(folder_path, f"{filename}_train")
+    val_dataset = MultiFidelityDataset.load(folder_path, f"{filename}_val")
+    test_dataset = MultiFidelityDataset.load(folder_path, f"{filename}_test")
     
     return train_dataset, val_dataset, test_dataset
 
@@ -728,7 +737,7 @@ def Generate_Analytic_Dataset(
             each tuple contains the desired noise variances for each output dimension.
         random_generator: Random generator to use for generating the dataset.
     Returns:
-        A MultiSourceDataset object containing the generated dataset.
+        A MultiFidelityDataset object containing the generated dataset.
     """
     # Sanity checks
     if quant_in and num_ranges is None:  # Check that num_ranges is provided if quant_in is True
@@ -818,4 +827,153 @@ def Generate_Analytic_Dataset(
         num_samples=num_samples,
     )
     # Return dataset
-    return MultiSourceDataset(source_data, cat_data, num_data, targets_data, meta)
+    return MultiFidelityDataset(source_data, cat_data, num_data, targets_data, meta)
+
+
+class StratifiedSourceSampler(Sampler):
+    """
+    Sampler that ensures each batch contains at least one sample from each source.
+    This prevents empty source splits that can cause NaN losses or inconsistent loss values.
+    
+    The sampler groups indices by source and ensures balanced sampling across sources.
+    """
+    def __init__(self, dataset: MultiFidelityDataset, batch_size: int, shuffle: bool = True, generator=None):
+        """
+        Initializes the stratified sampler.
+        Args:
+            dataset (MultiFidelityDataset): The dataset to sample from.
+            batch_size (int): Size of each batch.
+            shuffle (bool): Whether to shuffle the indices. Default is True.
+            generator (torch.Generator, optional): Random number generator for reproducibility.
+        """
+        if not isinstance(dataset, MultiFidelityDataset):
+            raise TypeError("StratifiedSourceSampler requires a MultiFidelityDataset")
+        
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.generator = generator
+        
+        # Get number of sources from metadata
+        if 'dsource' not in dataset.meta:
+            raise ValueError("Dataset metadata must contain 'dsource'")
+        self.num_sources = dataset.meta['dsource']
+        
+        # Group indices by source
+        self.source_indices = [[] for _ in range(self.num_sources)]
+        for idx in range(len(dataset)):
+            # Get source for this sample (one-hot encoded)
+            source = dataset.source[idx]
+            source_idx = np.argmax(source)  # Find which source this sample belongs to
+            self.source_indices[source_idx].append(idx)
+        
+        # Check that we have at least one sample per source
+        min_samples_per_source = min(len(indices) for indices in self.source_indices)
+        if min_samples_per_source == 0:
+            warnings.warn(
+                "Some sources have no samples. Stratified sampling may not work correctly.",
+                UserWarning
+            )
+        
+        # Calculate number of batches
+        # Each batch needs at least one sample from each source
+        # Remaining samples can be distributed across sources
+        min_batch_size = self.num_sources
+        if batch_size < min_batch_size:
+            raise ValueError(
+                f"Batch size ({batch_size}) must be at least {min_batch_size} "
+                f"(number of sources) for stratified sampling."
+            )
+        
+        # Calculate how many batches we can make
+        # Strategy: ensure each batch has at least one from each source,
+        # then fill remaining slots proportionally
+        self.num_batches = len(dataset) // batch_size
+    
+    def __iter__(self):
+        """
+        Returns an iterator over batch indices, ensuring each batch has samples from all sources.
+        """
+        # Create a list of batches
+        batches = []
+        
+        # Create shuffled copies of source indices
+        source_indices_shuffled = []
+        for source_idx_list in self.source_indices:
+            indices = source_idx_list.copy()
+            if self.shuffle:
+                if self.generator is not None:
+                    # Use generator for reproducibility
+                    indices = indices.copy()
+                    for i in range(len(indices) - 1, 0, -1):
+                        j = int(torch.randint(0, i + 1, (1,), generator=self.generator).item())
+                        indices[i], indices[j] = indices[j], indices[i]
+                else:
+                    np.random.shuffle(indices)
+            source_indices_shuffled.append(indices)
+        
+        # Create batches ensuring at least one sample from each source
+        batch_idx = 0
+        source_positions = [0] * self.num_sources  # Track position in each source's index list
+        
+        while batch_idx < self.num_batches:
+            batch = []
+            
+            # First, add one sample from each source
+            for source_idx in range(self.num_sources):
+                if source_positions[source_idx] < len(source_indices_shuffled[source_idx]):
+                    batch.append(source_indices_shuffled[source_idx][source_positions[source_idx]])
+                    source_positions[source_idx] += 1
+            
+            # Fill remaining slots in batch proportionally across sources
+            remaining_slots = self.batch_size - len(batch)
+            total_remaining = sum(
+                len(source_indices_shuffled[i]) - source_positions[i] 
+                for i in range(self.num_sources)
+            )
+            
+            if total_remaining > 0:
+                # Distribute remaining slots proportionally
+                for _ in range(remaining_slots):
+                    # Find source with most remaining samples (proportional distribution)
+                    best_source = None
+                    best_ratio = -1
+                    for source_idx in range(self.num_sources):
+                        remaining = len(source_indices_shuffled[source_idx]) - source_positions[source_idx]
+                        if remaining > 0:
+                            # Ratio of remaining samples for this source
+                            ratio = remaining / total_remaining
+                            if ratio > best_ratio:
+                                best_ratio = ratio
+                                best_source = source_idx
+                    
+                    if best_source is not None:
+                        batch.append(source_indices_shuffled[best_source][source_positions[best_source]])
+                        source_positions[best_source] += 1
+                        total_remaining -= 1
+                    else:
+                        break  # No more samples available
+            
+            if len(batch) > 0:
+                batches.append(batch)
+                batch_idx += 1
+            else:
+                break  # No more samples to create batches
+        
+        # Shuffle batches if requested
+        if self.shuffle and self.generator is None:
+            np.random.shuffle(batches)
+        elif self.shuffle and self.generator is not None:
+            # Shuffle using generator
+            for i in range(len(batches) - 1, 0, -1):
+                j = int(torch.randint(0, i + 1, (1,), generator=self.generator).item())
+                batches[i], batches[j] = batches[j], batches[i]
+        
+        # Flatten batches into single list of indices
+        for batch in batches:
+            for idx in batch:
+                yield idx
+    
+    def __len__(self):
+        """Returns the number of samples that will be yielded."""
+        return self.num_batches * self.batch_size

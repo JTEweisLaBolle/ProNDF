@@ -23,8 +23,8 @@ To view registered blocks, use:
 
 import torch
 from torch import nn
-from .act_fns import ACT_FN_REGISTRY
-from .utils import reparameterization_trick
+from act_fns import ACT_FN_REGISTRY
+from utils import reparameterization_trick
 
 
 # Block registry for storing different types of blocks

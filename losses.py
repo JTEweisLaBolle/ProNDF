@@ -94,8 +94,9 @@ def register_loss(name):
 
 
 # Loss context object to store model parameters/outputs to be accessed by loss classes.
-@register_loss("Loss_Context")  # TODO: Loss context is never used outside of loss handlers - do I need to include it in a registry?
-class Loss_Context(nn.Module):
+# Note: Loss_Context does not inherit from nn.Module to avoid circular references
+# when storing the model reference (ProNDF -> loss_handler -> Loss_Context -> model -> ...)
+class Loss_Context:
     """
     Context object for losses. Stores model parameters and outputs to be accessed by 
     loss classes.
@@ -109,9 +110,9 @@ class Loss_Context(nn.Module):
         Args:
             model (pl.LightningModule): The model from which to extract parameters or 
                 other information if needed.
-            batch (tuple): The batch of data to be used in loss computation. For typical 
-                usage of ProNDF, the batch will have the form 
-                (source, cat, num, targets), where source and cat are one-hot encoded.
+            batch (dict): The batch of data to be used in loss computation. For typical 
+                usage of ProNDF, the batch will be a dict with keys 'source', 'cat', 'num', 
+                'targets', where source and cat are one-hot encoded.
             outputs (dict[str, str]): The model outputs to be used in loss 
                 computation. Should be containing a dictionary for each block with that 
                 block's outputs. For example, if B1 and B3 are probabilistic while B2 is 
@@ -128,7 +129,6 @@ class Loss_Context(nn.Module):
                         }
                 }
         """
-        super(Loss_Context, self).__init__()
         self.model = model
         self.batch = batch
         self.outputs = outputs
@@ -184,9 +184,15 @@ class Output_MSE_loss(Base_Loss):
         Returns:
             torch.Tensor: The computed loss.
         """
+        targets = context.batch['targets']
+        # Check if batch is empty (can happen when splitting by source)
+        if targets.numel() == 0:
+            # Get device from model parameters
+            device = next(context.model.parameters()).device
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
         if not hasattr(self, "probabilistic_output"):
             self.probabilistic_output = context.model.B3.probabilistic_output
-        targets = context.batch[-1]  # Targets should be the last element in the batch
         if self.probabilistic_output:
             # If the model outputs a distribution object, extract the mean
             preds = context.outputs["B3"]["out_dist"]
@@ -228,7 +234,13 @@ class Output_NLL_loss(Base_Loss):
         Returns:
             torch.Tensor: The computed loss.
         """
-        targets = context.batch[-1]  # Targets should be the last element in the batch
+        targets = context.batch['targets']
+        # Check if batch is empty (can happen when splitting by source)
+        if targets.numel() == 0:
+            # Get device from model parameters
+            device = next(context.model.parameters()).device
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
         preds_dist = context.outputs["B3"]["out_dist"]
         mu = preds_dist.mean
         var = preds_dist.variance
@@ -268,7 +280,13 @@ class Output_IS_loss(Base_Loss):
         Returns:
             torch.Tensor: The computed loss.
         """
-        targets = context.batch[-1]  # Targets should be the last element in the batch
+        targets = context.batch['targets']
+        # Check if batch is empty (can happen when splitting by source)
+        if targets.numel() == 0:
+            # Get device from model parameters
+            device = next(context.model.parameters()).device
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
         preds_dist = context.outputs["B3"]["out_dist"]
         mu = preds_dist.mean
         sigma = preds_dist.stddev
@@ -313,7 +331,13 @@ class Intermediate_KL_Div_Loss(Base_Loss):
         Returns:
             torch.Tensor: The computed loss.
         """
-        targets = context.batch[-1]  # Targets should be the last element in the batch
+        targets = context.batch['targets']
+        # Check if batch is empty (can happen when splitting by source)
+        if targets.numel() == 0:
+            # Get device from model parameters
+            device = next(context.model.parameters()).device
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
         preds_dist = context.outputs[self.block_label]["out_dist"]
         var = preds_dist.variance
         loss = KL_div_var_only_loss(var, targets, prior_var=self.prior_var.item(), eps=self.eps.item())
@@ -363,7 +387,12 @@ class No_Split(Base_Data_Split):
     """
     Performs no data splitting. Returns the input data as is.
     """
-    def __init__(self):
+    def __init__(self, config: dict[any, any] = None):
+        """
+        Initializes the No_Split data split.
+        Args:
+            config (dict, optional): Config object (not used, but kept for consistency with other data splits).
+        """
         super(No_Split, self).__init__()
         self.register_buffer("num_splits", torch.tensor(1))
 
@@ -408,17 +437,28 @@ class Split_by_Source(Base_Data_Split):
             Out: List of Loss_Context objects with batches and outputs split by source.
         """
         context_splits = []
-        source, cat, num, targets = context.batch
+        source = context.batch['source']
+        cat = context.batch['cat']
+        num = context.batch['num']
+        targets = context.batch['targets']
         outputs = context.outputs
         for ds in range(self.num_sources.item()):
             # Get indices for the current source
             source_mask = source[:, ds] == 1
             # Split batch by source
+            # Note: cat and num may be empty tensors (created with empty_like) when qual_in/quant_in are False,
+            # but we still split them to maintain consistent batch structure. The model checks these flags
+            # before using cat/num, so this is safe.
             source_split = source[source_mask, :]
             cat_split = cat[source_mask, :]
             num_split = num[source_mask, :]
             targets_split = targets[source_mask, :]
-            batch_split = (source_split, cat_split, num_split, targets_split)
+            batch_split = {
+                'source': source_split,
+                'cat': cat_split,
+                'num': num_split,
+                'targets': targets_split
+            }
             # Split outputs by source
             outputs_split = {}
             for block_label, block_outputs in outputs.items():
@@ -470,22 +510,39 @@ class Split_by_Output_Dim(Base_Data_Split):
             Out: List of Loss_Context objects with batches and outputs split by output.
         """
         context_splits = []
-        source, cat, num, targets = context.batch
+        source = context.batch['source']
+        cat = context.batch['cat']
+        num = context.batch['num']
+        targets = context.batch['targets']
         outputs = context.outputs
         for out_idx in range(self.num_outputs.item()):
             #Split targets by output dim
             targets_split = targets[:, out_idx].unsqueeze(1)
-            batch_split = (source, cat, num, targets_split)
-            # Split outputs by output dim
-            outputs_split = copy.deepcopy(context.outputs)  # Copy the outputs dict
-            outputs_split["B3"]["out"] = outputs["B3"]["out"][:, out_idx].unsqueeze(1)  # Split B3 output
-            if "out_dist" in outputs["B3"]:
-                # Build split dist. object
-                out_dist = outputs["B3"]["out_dist"]
-                mean_split = out_dist.mean[:, out_idx].unsqueeze(1)
-                stddev_split = out_dist.stddev[:, out_idx].unsqueeze(1)
-                out_dist_split = torch.distributions.Normal(mean_split, stddev_split)
-                outputs_split["B3"]["out_dist"] = out_dist_split
+            batch_split = {
+                'source': source,
+                'cat': cat,
+                'num': num,
+                'targets': targets_split
+            }
+            # Split outputs by output dim - manually construct to avoid deepcopy issues with computation graph tensors
+            outputs_split = {}
+            for block_label, block_outputs in outputs.items():
+                block_split = {}
+                if block_label == "B3":
+                    # Split B3 output by output dimension
+                    block_split["out"] = block_outputs["out"][:, out_idx].unsqueeze(1)
+                    if "out_dist" in block_outputs:
+                        # Build split dist. object
+                        out_dist = block_outputs["out_dist"]
+                        mean_split = out_dist.mean[:, out_idx].unsqueeze(1)
+                        stddev_split = out_dist.stddev[:, out_idx].unsqueeze(1)
+                        block_split["out_dist"] = torch.distributions.Normal(mean_split, stddev_split)
+                else:
+                    # For B1 and B2, keep outputs unchanged
+                    block_split["out"] = block_outputs["out"]
+                    if "out_dist" in block_outputs:
+                        block_split["out_dist"] = block_outputs["out_dist"]
+                outputs_split[block_label] = block_split
             # Append new context for the split data
             context_splits.append(Loss_Context(context.model, batch_split, outputs_split))
         return context_splits
@@ -612,7 +669,9 @@ class Two_Moment_Weighting(Base_LW_alg):
         Args:
             losses (torch.Tensor): Flattened tensor of losses. Should be scalar or 1D
         """
-        return torch.sum(loss_terms * self.weights)
+        # Ensure weights are on the same device as loss_terms
+        weights = self.weights.to(loss_terms.device)
+        return torch.sum(loss_terms * weights)
 
     def update(self, loss_terms: list[torch.Tensor], context: Loss_Context):
         """
@@ -725,7 +784,9 @@ class Fixed_Weights(Base_LW_alg):
         """
         Applies loss weights to loss terms and sums them.
         """
-        return torch.sum(loss_terms * self.weights)
+        # Ensure weights are on the same device as loss_terms
+        weights = self.weights.to(loss_terms.device)
+        return torch.sum(loss_terms * weights)
 
 
 # Loss computation registry
@@ -765,9 +826,9 @@ class Base_Loss_Handler(nn.Module):
         Args:
             model (pl.LightningModule): The model from which to extract parameters or 
                 other information if needed.
-            batch (tuple): The batch of data to be used in loss computation. For 
-                typical usage of ProNDF, the batch will have the form 
-                (source, cat, num, targets), where source and cat are one-hot encoded.
+            batch (dict): The batch of data to be used in loss computation. For 
+                typical usage of ProNDF, the batch will be a dict with keys 'source', 'cat', 
+                'num', 'targets', where source and cat are one-hot encoded.
             outputs (dict[str, str]): The model outputs to be used in loss 
                 computation. Should be containing a dictionary for each block with that 
                 block's outputs.
@@ -823,7 +884,7 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
                 config["loss_function_classes"], config["loss_function_configs"]
             )]
         )
-        self.data_splits = DATA_SPLIT_REGISTRY[config["data_split_classes"][0]](**config["data_split_configs"][0])
+        self.data_splits = DATA_SPLIT_REGISTRY[config["data_split_classes"][0]](config["data_split_configs"][0])
         # Extract number of splits from the data split class
         self.num_splits = self.data_splits.num_splits.item()
         # Add number of loss terms to the config for the loss weighting algorithm
@@ -855,7 +916,8 @@ class One_Stage_Loss_Handler(Base_Loss_Handler):
             for loss_fn in self.loss_functions:
                 loss = loss_fn(context)
                 losses.append(loss)
-        self.register_buffer("loss_terms", torch.stack(losses))  # Store loss terms
+        # Store loss terms as regular attribute (not buffer) since it's temporary computation
+        self.loss_terms = torch.stack(losses)
         # return losses  # TODO: Decide whether to return losses or not
     
     def update_loss_weights(self):
@@ -942,7 +1004,7 @@ class Hierarchical_Loss_Handler(Base_Loss_Handler):
             )]
         )
         self.data_splits = nn.ModuleList(
-            [DATA_SPLIT_REGISTRY[data_split_class](**split_config) for data_split_class, split_config in zip(
+            [DATA_SPLIT_REGISTRY[data_split_class](split_config) for data_split_class, split_config in zip(
                 config["data_split_classes"], config["data_split_configs"]
             )]
         )
@@ -977,18 +1039,31 @@ class Hierarchical_Loss_Handler(Base_Loss_Handler):
             outer_splits = self.data_splits[1](self.context)  # First data split
             for context_split in outer_splits:
                 context_splits.append(self.data_splits[0](context_split))  # Second data split
-            # Initialize list to store losses
+            # Initialize list to store losses and track non-empty splits
             losses = []
+            non_empty_mask_list = []
             # Compute loss hierarchically for each data split and each loss function
             for context_list in context_splits:
                 losses_list = []
+                mask_list = []
                 for context in context_list:
+                    # Check if this split is non-empty
+                    batch_size = context.batch['targets'].shape[0]
+                    is_non_empty = batch_size > 0
+                    # Replicate mask for each loss function
                     for loss_fn in self.loss_functions:
                         loss = loss_fn(context)
                         losses_list.append(loss)
+                        mask_list.append(is_non_empty)
                 losses.append(torch.stack(losses_list))
+                non_empty_mask_list.append(torch.tensor(mask_list))
             losses = torch.stack(losses)  # Stack losses by outer split
-            self.register_buffer("loss_terms", losses)  # Store loss terms
+            # Store loss terms and mask for empty splits as regular attributes (not buffers)
+            # since they're temporary computation results and shouldn't be saved in checkpoints
+            self.loss_terms = losses
+            # Convert mask to tensor with same device and shape as loss_terms
+            device = losses.device
+            self.non_empty_mask = torch.stack(non_empty_mask_list).to(device)
             return losses  # TODO: Decide whether to return losses or not
         
     def update_loss_weights(self):
@@ -1004,11 +1079,13 @@ class Hierarchical_Loss_Handler(Base_Loss_Handler):
             raise ValueError(
                 "Loss terms have not been computed. Call compute_loss_terms() first."
             )
+        # Mask out empty splits before updating weights to avoid biasing weight updates
+        masked_loss_terms = self.loss_terms * self.non_empty_mask.float()
         # Update inner loss weighting algorithm by summing along the first dimension
-        inner_loss_terms = torch.sum(self.loss_terms, dim=0)
+        inner_loss_terms = torch.sum(masked_loss_terms, dim=0)
         self.loss_weighting_algorithm[0].update(inner_loss_terms, self.context)
         # Update outer loss weighting algorithm by summing along the second dimension
-        outer_loss_terms = torch.sum(self.loss_terms, dim=1)
+        outer_loss_terms = torch.sum(masked_loss_terms, dim=1)
         self.loss_weighting_algorithm[1].update(outer_loss_terms, self.context)
 
     def compute_loss(self):
@@ -1024,9 +1101,14 @@ class Hierarchical_Loss_Handler(Base_Loss_Handler):
             raise ValueError(
                 "Loss terms have not been computed. Call compute_loss_terms() first."
             )
+        # Mask out empty splits (set to 0) to prevent them from contributing to loss
+        # This ensures consistent loss values across batches with different source distributions
+        masked_loss_terms = self.loss_terms * self.non_empty_mask.float()
         # Apply inner loss weighting algorithm to the loss terms by multiplying 
         # element-wise through each row of loss terms
-        inner_weighted_loss = self.loss_weighting_algorithm[0].weights * self.loss_terms
+        # Ensure weights are on the same device as loss_terms
+        weights = self.loss_weighting_algorithm[0].weights.to(self.loss_terms.device)
+        inner_weighted_loss = weights * masked_loss_terms
         inner_weighted_loss = torch.sum(inner_weighted_loss, dim=0)
         # Apply outer loss weighting algorithm
         weighted_loss = self.loss_weighting_algorithm[1](inner_weighted_loss)

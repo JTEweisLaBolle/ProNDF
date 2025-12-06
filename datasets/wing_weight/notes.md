@@ -39,9 +39,11 @@ The wing weight function has 10 continuous input variables:
 This dataset includes one high-fidelity source and three low-fidelity approximations:
 
 1. **yh (High-Fidelity)**: Standard wing weight function with Sw·Wp term
-2. **yl1 (Low-Fidelity 1)**: Simplified with 1·Wp instead of Sw·Wp
-3. **yl2 (Low-Fidelity 2)**: Modified with Sw^0.8 instead of Sw^0.758, and 1·Wp
-4. **yl3 (Low-Fidelity 3)**: Modified with Sw^0.9 instead of Sw^0.758, and 0·Wp (no paint weight term)
+2. **yl1 (Low-Fidelity 1)**: Simplified with 1·Wp instead of Sw·Wp, RRMSE of 0.20 relative to high-fidelity source
+3. **yl2 (Low-Fidelity 2)**: Modified with Sw^0.8 instead of Sw^0.758, and 1·Wp, RRMSE of 1.14 relative to high-fidelity source
+4. **yl3 (Low-Fidelity 3)**: Modified with Sw^0.9 instead of Sw^0.758, and 0·Wp (no paint weight term), RRMSE of 5.75 relative to high-fidelity source
+
+Where RRMSE (relative root mean squared error) is measured on 10,000 random test samples and indicates accuracy of the low-fidelity source in modeling the high-fidelity source.
 
 ## Dataset Statistics
 

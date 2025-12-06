@@ -36,7 +36,7 @@ dataset = data.Generate_Analytic_Dataset(
 dataset.save(save_path, "rational_dataset")
 
 # Load dataset
-dataset = data.MultiSourceDataset.load(save_path, "rational_dataset")
+dataset = data.MultiFidelityDataset.load(save_path, "rational_dataset")
 
 # Split dataset
 split_ratios = [5/800, 3/800, 0.99]

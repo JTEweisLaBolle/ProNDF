@@ -10,9 +10,9 @@ from torch.nn import functional as F
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import warnings
-from .blocks import BLOCK_REGISTRY
-from .losses import LOSS_HANDLER_REGISTRY
-from .optimizers import OPTIMIZER_REGISTRY
+from blocks import BLOCK_REGISTRY
+from losses import LOSS_HANDLER_REGISTRY
+from optimizers import OPTIMIZER_REGISTRY
 
 
 class ProNDF(pl.LightningModule):
@@ -67,7 +67,7 @@ class ProNDF(pl.LightningModule):
         # Build input-output block
         self.B3 = BLOCK_REGISTRY[B3_type](**B3_config)
         # Build loss handler
-        self.loss_handler = LOSS_HANDLER_REGISTRY[loss_handler_type](**loss_handler_config)
+        self.loss_handler = LOSS_HANDLER_REGISTRY[loss_handler_type](loss_handler_config)
 
     def forward(self, batch):
         """
@@ -75,7 +75,9 @@ class ProNDF(pl.LightningModule):
         from the output distribution if block 3 is probabilistic).
         TODO: Finish docstring
         """
-        source, cat, num, targets = batch
+        source = batch['source']
+        cat = batch['cat']
+        num = batch['num']
         # Get source manifold
         z_B1 = self.B1(source)
         # Get categorical manifold if necessary
@@ -97,7 +99,9 @@ class ProNDF(pl.LightningModule):
         Builds output dictionary for use in loss handling / loss context object
         TODO: Finish docstring
         """
-        source, cat, num, targets = batch
+        source = batch['source']
+        cat = batch['cat']
+        num = batch['num']
         outputs = {}
         # Get source manifold
         B1_outputs = {}
@@ -161,6 +165,8 @@ class ProNDF(pl.LightningModule):
         self.loss_handler.compute_loss_terms()
         # Compute final loss
         loss = self.loss_handler.compute_loss()
+        # Log validation loss for early stopping and monitoring
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
     
     def test_step(self, batch, batch_idx):
@@ -179,9 +185,13 @@ class ProNDF(pl.LightningModule):
     
     def configure_optimizers(self):
         """
-        Initializes and configures optimizers using provided parameters
+        Initializes and configures optimizers using provided parameters.
+        Note: Model parameters are passed here since they're only available after model initialization.
         """
-        optimizer = OPTIMIZER_REGISTRY[self.hparams.optimizer_type](**self.hparams.optimizer_config)
+        optimizer = OPTIMIZER_REGISTRY[self.hparams.optimizer_type](
+            self.parameters(), 
+            **self.hparams.optimizer_config
+        )
         return optimizer
     
 
@@ -233,7 +243,7 @@ def Build_ProNDF(
         B3_type = "Prob_Block"
     else:
         B3_type = "Det_Block"
-    # Blocks 1 and 2 configs
+    # Block 1 config (always needed)
     B1_config = {
         "d_in": dsource,
         "d_out": dz_B1,
@@ -241,13 +251,28 @@ def Build_ProNDF(
         "hidden_act_fn": hidden_act_fn,
         "output_act_fn": "Identity",
     }
-    B2_config = {
-        "d_in": sum(dcat),
-        "d_out": dz_B2,
-        "hidden_layers": architecture["B2"],
-        "hidden_act_fn": hidden_act_fn,
-        "output_act_fn": "Identity",
-    }
+    # Block 2 config (only needed if qual_in is True)
+    if qual_in:
+        # Handle case where dcat might be None or empty
+        if dcat is None or len(dcat) == 0:
+            raise ValueError("dcat must be provided and non-empty when qual_in=True")
+        B2_config = {
+            "d_in": sum(dcat),
+            "d_out": dz_B2,
+            "hidden_layers": architecture["B2"],
+            "hidden_act_fn": hidden_act_fn,
+            "output_act_fn": "Identity",
+        }
+    else:
+        # B2_config won't be used, but we need to provide something
+        # The ProNDF class will check qual_in before using it
+        B2_config = {
+            "d_in": 0,  # Dummy value, won't be used
+            "d_out": dz_B2,
+            "hidden_layers": architecture["B2"],
+            "hidden_act_fn": hidden_act_fn,
+            "output_act_fn": "Identity",
+        }
     # Block 3 config
     if qual_in and quant_in:  # Get combined input dimensionality
         d_u = dz_B1 + dz_B2 + dnum
@@ -305,6 +330,7 @@ def Build_ProNDF(
         dsource = dsource,
         dcat = dcat,
         dnum = dnum,
+        dout = dout,
         qual_in = qual_in,
         quant_in = quant_in,
         B1_type = B1_type,
