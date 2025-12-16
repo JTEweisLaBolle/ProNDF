@@ -289,7 +289,7 @@ def plot_1D(model, train_dataset, val_dataset, test_dataset, scaler=None, device
     return fig
 
 
-def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("red", "blue"), lw=2, s=30, figsize=7):
+def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("red", "blue"), lw=2, s=30, figsize=7, noise_variance=None):
     """
     Plot true vs predicted values for each data source.
     
@@ -302,6 +302,11 @@ def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("re
         lw: Line width for diagonal line
         s: Scatter point size
         figsize: Base figure size
+        noise_variance: Optional noise variance value(s). If provided, dashed red lines will be plotted
+            at y = x ± sqrt(noise_variance) to show the noise floor. Can be:
+            - A single scalar (same noise for all sources)
+            - A list/array of length n_sources (different noise per source)
+            - None (default, no noise floor plotted)
     
     Returns:
         matplotlib figure object
@@ -323,6 +328,19 @@ def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("re
     y_min = np.min(np.concatenate((y_true, y_pred), axis=0)[:])
     y_max = np.max(np.concatenate((y_true, y_pred), axis=0)[:])
     yy = np.linspace(y_min, y_max, num=1000)
+    
+    # Process noise_variance if provided
+    noise_std = None
+    if noise_variance is not None:
+        noise_variance = np.asarray(noise_variance)
+        if noise_variance.ndim == 0:
+            # Scalar - same noise for all sources
+            noise_std = np.sqrt(noise_variance)
+        else:
+            # Array - different noise per source
+            noise_std = np.sqrt(noise_variance)
+            if len(noise_std) != source_OH.shape[1]:
+                raise ValueError(f"noise_variance array length ({len(noise_std)}) must match number of sources ({source_OH.shape[1]})")
     
     n_sources = source_OH.shape[1]
     if n_sources == 1:
@@ -347,6 +365,18 @@ def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("re
             curr_ax = ax_list[row_idx, col_idx]
         
         curr_ax.plot(yy, yy, color=colors[0], linewidth=lw, label="true = pred")
+        
+        # Plot noise floor if provided
+        if noise_std is not None:
+            if isinstance(noise_std, np.ndarray) and noise_std.ndim > 0:
+                # Per-source noise
+                curr_noise_std = noise_std[source_idx]
+            else:
+                # Scalar noise (same for all sources)
+                curr_noise_std = noise_std
+            curr_ax.plot(yy, yy + curr_noise_std, '--', color='red', linewidth=lw, alpha=0.5, label='Noise floor (+1σ)')
+            curr_ax.plot(yy, yy - curr_noise_std, '--', color='red', linewidth=lw, alpha=0.5, label='Noise floor (-1σ)')
+        
         curr_ax.scatter(
             y_true[source_OH[:, source_idx] == 1, :],
             y_pred[source_OH[:, source_idx] == 1, :],

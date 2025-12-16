@@ -1,0 +1,18 @@
+{
+  "dsource": 4,
+  "dcat": [
+    10,
+    3,
+    16
+  ],
+  "dnum": 0,
+  "dtargets": 1,
+  "qual_in": true,
+  "quant_in": false,
+  "num_samples": [
+    384,
+    384,
+    143,
+    192
+  ]
+}
