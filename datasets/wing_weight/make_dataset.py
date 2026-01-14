@@ -1,3 +1,7 @@
+"""
+Generate and save the wing weight dataset splits.
+"""
+
 import data
 import numpy as np
 
@@ -12,6 +16,7 @@ num_samples = [2100, 7000, 7000, 7000]
 
 # Set source functions
 def yh(cat,x):
+    """High-fidelity wing weight response function."""
     Sw, Wfw, A, Lam, q, lam, tc, Nz, Wdg, Wp = [x[:, i] for i in range(10)]
     Lam *= np.pi/180
     fac1 = (Wfw**0.0035)*((A/(np.cos(Lam)**2))**0.6)
@@ -19,6 +24,7 @@ def yh(cat,x):
     fac3 = (Nz*Wdg)**0.49
     return 0.036*(Sw**0.758)*fac1*fac2*fac3 + Sw*Wp
 def yl1(cat,x):
+    """Low-fidelity wing weight response function (variant 1)."""
     Sw, Wfw, A, Lam, q, lam, tc, Nz, Wdg, Wp = [x[:, i] for i in range(10)]
     Lam *= np.pi/180
     fac1 = (Wfw**0.0035)*((A/(np.cos(Lam)**2))**0.6)
@@ -26,6 +32,7 @@ def yl1(cat,x):
     fac3 = (Nz*Wdg)**0.49
     return 0.036*(Sw**0.758)*fac1*fac2*fac3 + 1*Wp
 def yl2(cat,x):
+    """Low-fidelity wing weight response function (variant 2)."""
     Sw, Wfw, A, Lam, q, lam, tc, Nz, Wdg, Wp = [x[:, i] for i in range(10)]
     Lam *= np.pi/180
     fac1 = (Wfw**0.0035)*((A/(np.cos(Lam)**2))**0.6)
@@ -33,6 +40,7 @@ def yl2(cat,x):
     fac3 = (Nz*Wdg)**0.49
     return 0.036*(Sw**0.8)*fac1*fac2*fac3 + 1*Wp
 def yl3(cat,x):
+    """Low-fidelity wing weight response function (variant 3)."""
     Sw, Wfw, A, Lam, q, lam, tc, Nz, Wdg, Wp = [x[:, i] for i in range(10)]
     Lam *= np.pi/180
     fac1 = (Wfw**0.0035)*((A/(np.cos(Lam)**2))**0.6)

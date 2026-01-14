@@ -1,3 +1,7 @@
+"""
+Generate and save the rational function dataset splits.
+"""
+
 import data
 import numpy as np
 
@@ -11,10 +15,21 @@ np.random.seed(42)
 num_samples = [800, 4800, 4800, 4800]
 
 # Set source functions
-yh = lambda cat, x: 1.0 / ((0.1 * x[:] ** 3) + (x[:] ** 2) + x[:] + 1)
-yl1 = lambda cat, x: 1.0 / ((0.2 * x[:] ** 3) + (x[:] ** 2) + x[:] + 1)
-yl2 = lambda cat, x: 1.0 / ((x[:] ** 2) + x[:] + 1)
-yl3 = lambda cat, x:  1.0 / ((x[:] ** 2)+ 1)
+def yh(cat, x):
+    """High-fidelity rational response function."""
+    return 1.0 / ((0.1 * x[:] ** 3) + (x[:] ** 2) + x[:] + 1)
+
+def yl1(cat, x):
+    """Low-fidelity rational response function (variant 1)."""
+    return 1.0 / ((0.2 * x[:] ** 3) + (x[:] ** 2) + x[:] + 1)
+
+def yl2(cat, x):
+    """Low-fidelity rational response function (variant 2)."""
+    return 1.0 / ((x[:] ** 2) + x[:] + 1)
+
+def yl3(cat, x):
+    """Low-fidelity rational response function (variant 3)."""
+    return 1.0 / ((x[:] ** 2) + 1)
 source_functions = [yh, yl1, yl2, yl3]
 
 # Make dataset

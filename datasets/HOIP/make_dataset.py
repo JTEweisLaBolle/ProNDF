@@ -1,3 +1,7 @@
+"""
+Generate and save the HOIP dataset splits.
+"""
+
 import sys
 import os
 import numpy as np
@@ -21,7 +25,7 @@ with open(pickle_path, 'rb') as f:
 # Get metadata
 dsource = dataset['dsource'][0]
 dcat = dataset.get('dcat', None)
-dnum = dataset.get('dnum', 0)
+dnum = dataset.get('dnum', None)
 dtargets = dataset['dy']
 
 # Combine train, val, and test data
@@ -32,9 +36,9 @@ source_test = dataset['source_test_OH']
 source_all = np.vstack([source_train, source_val, source_test])
 
 # Categorical inputs
-cat_train = dataset.get('cat_train', None)
-cat_val = dataset.get('cat_val', None)
-cat_test = dataset.get('cat_test', None)
+cat_train = dataset.get('cat_train_OH', None)
+cat_val = dataset.get('cat_val_OH', None)
+cat_test = dataset.get('cat_test_OH', None)
 cat_all = np.vstack([cat_train, cat_val, cat_test])
 qual_in = True
 

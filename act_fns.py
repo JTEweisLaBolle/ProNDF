@@ -42,29 +42,35 @@ def register_act_fn(name):
 
 @register_act_fn("Identity")
 class Identity(nn.Identity):
+    """Identity activation wrapper for registry usage."""
     pass
 
 
 @register_act_fn("Tanh")
 class Tanh(nn.Tanh):
+    """Hyperbolic tangent activation wrapper for registry usage."""
     pass
 
 
 @register_act_fn("ReLU")
 class ReLU(nn.ReLU):
+    """ReLU activation wrapper for registry usage."""
     pass
 
 
 @register_act_fn("Sigmoid")
 class Sigmoid(nn.Sigmoid):
+    """Sigmoid activation wrapper for registry usage."""
     pass
 
 
 @register_act_fn("LeakyReLU")
 class LeakyReLU(nn.LeakyReLU):
+    """LeakyReLU activation wrapper for registry usage."""
     pass
 
 
 @register_act_fn("Softmax")
 class Softmax(nn.Softmax):
+    """Softmax activation wrapper for registry usage."""
     pass

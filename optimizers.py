@@ -1,15 +1,8 @@
 """
-optimizers.py
-This module contains optimizer classes and a registry to store them.
-Additional or custom optimizers can be registered by the user if desired, 
-either in this file or inline.
-Registries are used to enable serialization by PyTorch Lightning's checkpointing 
-system and automatic hyperparameter saving, as class objects can not be serialized.
-Example usage:
-    # Importing and using the registry and adding a custom optimizer
-    from optimizers import OPTIMIZER_REGISTRY, register_optimizer
+Optimizer registry and wrappers for ProNDF.
 
-    # TODO: Finish docstring
+Currently only contains the Adam optimizer, but allows for easy extension to 
+other/custom optimizers if needed.
 """
 
 import torch
@@ -36,4 +29,5 @@ def register_optimizer(name):
 
 @register_optimizer("Adam")
 class Adam(torch.optim.Adam):
+    """Adam optimizer wrapper for registry usage."""
     pass

@@ -55,6 +55,9 @@ class Base_Block(nn.Module):
             self,
             probabilistic_output: bool = False,
             ):
+        """
+        Initializes base block and stores probabilistic output flag.
+        """
         super(Base_Block, self).__init__()
         if type(self) is Base_Block:
             raise NotImplementedError("Base_Block should not be instantiated directly.")

@@ -1,7 +1,5 @@
 """
-Docstring to be added later
-
-
+Model definitions and constructors for ProNDF.
 """
 
 import torch
@@ -10,18 +8,19 @@ from torch.nn import functional as F
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import warnings
+from typing import Optional, List
 from blocks import BLOCK_REGISTRY
 from losses import LOSS_HANDLER_REGISTRY
 from optimizers import OPTIMIZER_REGISTRY
+from loggers import LearningRateLogger
 
 
 class ProNDF(pl.LightningModule):
     """
-    Probabilistic NN for data fusion.
-    TODO: UPDATE DOCSTRING AT LATER DATE
-    PSEUDOCODE:
-    Take in block 1, block 2, and block 3, trainer, laerning algorithm, etc.
-    Construct the architecture based on the blocks and the parameters passed in.
+    Probabilistic neural network for multi-fidelity data fusion.
+    
+    This LightningModule composes three blocks (source, categorical, and output)
+    and delegates loss computation to a configurable loss handler.
     """
     def __init__(
         self,
@@ -45,19 +44,34 @@ class ProNDF(pl.LightningModule):
         optimizer_type: str,  # Optimizer choice
         optimizer_config: dict[str, any],  # Optimizer configuration
         # Logging and other misc
-        # log_plots: dict[str, bool | int] = {  # TODO: Figure out how to do logging. Should this be done via a "logger" class? Most likely yes.
-        #     "true_pred": True,
-        #     "source_LS": True,
-        #     "freq": 1000,
-        # },
+        loggers: Optional[List] = None,  # List of logger instances for tracking training metrics
     ):
         """
-        TODO: Add docstring for __init__
+        Initializes the ProNDF LightningModule and builds blocks, loss handler, and loggers.
+        
+        Args:
+            dsource: Number of data sources.
+            dcat: List of categorical levels per categorical input.
+            dnum: Dimension of numerical inputs.
+            dout: Dimension of outputs/targets.
+            qual_in: Whether categorical inputs are present.
+            quant_in: Whether numerical inputs are present.
+            B1_type: Registry name for the source block.
+            B1_config: Configuration for the source block.
+            B2_type: Registry name for the categorical block.
+            B2_config: Configuration for the categorical block.
+            B3_type: Registry name for the input-output block.
+            B3_config: Configuration for the input-output block.
+            loss_handler_type: Registry name for the loss handler.
+            loss_handler_config: Configuration for the loss handler.
+            optimizer_type: Registry name for the optimizer.
+            optimizer_config: Configuration for the optimizer.
+            loggers: Optional list of custom logger instances.
         """
         super(ProNDF, self).__init__()
         # TODO: Add sanity checks for inputs, warnings, etc.
-        # Save parameters
-        self.save_hyperparameters()
+        # Save parameters (exclude loggers from hyperparameters as they're not serializable)
+        self.save_hyperparameters(ignore=['loggers'])
         # Build blocks and loss handler
         # Build source block
         self.B1 = BLOCK_REGISTRY[B1_type](**B1_config)
@@ -68,12 +82,25 @@ class ProNDF(pl.LightningModule):
         self.B3 = BLOCK_REGISTRY[B3_type](**B3_config)
         # Build loss handler
         self.loss_handler = LOSS_HANDLER_REGISTRY[loss_handler_type](loss_handler_config)
+        # Store loggers (use _loggers to avoid conflict with PyTorch Lightning's property system)
+        self._loggers = loggers if loggers is not None else []
+    
+    @property
+    def loggers(self):
+        """Property to access loggers (for backward compatibility)."""
+        return self._loggers
 
     def forward(self, batch):
         """
-        Performs a basic forward pass through the model, returning a tensor (sampled 
-        from the output distribution if block 3 is probabilistic).
-        TODO: Finish docstring
+        Performs a forward pass and returns model output tensor.
+        
+        If block 3 is probabilistic, this returns a sample from the output distribution.
+        
+        Args:
+            batch: Dictionary with keys 'source', 'cat', 'num', and 'targets'.
+        
+        Returns:
+            torch.Tensor: Model outputs for the batch.
         """
         source = batch['source']
         cat = batch['cat']
@@ -96,8 +123,14 @@ class ProNDF(pl.LightningModule):
         
     def get_model_outputs(self, batch):
         """
-        Builds output dictionary for use in loss handling / loss context object
-        TODO: Finish docstring
+        Builds output dictionary for loss handling and logging.
+        
+        Args:
+            batch: Dictionary with keys 'source', 'cat', 'num', and 'targets'.
+        
+        Returns:
+            dict: Nested dict of outputs for each block, including distributions
+                when blocks are probabilistic.
         """
         source = batch['source']
         cat = batch['cat']
@@ -151,6 +184,11 @@ class ProNDF(pl.LightningModule):
         self.loss_handler.update_loss_weights()
         # Compute final loss
         loss = self.loss_handler.compute_loss()
+        # Log training loss
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        # Call custom loggers
+        for logger in self._loggers:
+            logger.log(self, stage="train")
         return loss
     
     def validation_step(self, batch, batch_idx):
@@ -167,6 +205,9 @@ class ProNDF(pl.LightningModule):
         loss = self.loss_handler.compute_loss()
         # Log validation loss for early stopping and monitoring
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        # Call custom loggers
+        for logger in self._loggers:
+            logger.log(self, stage="val")
         return loss
     
     def test_step(self, batch, batch_idx):
@@ -196,13 +237,8 @@ class ProNDF(pl.LightningModule):
     
 
 def Build_ProNDF(
-    # Data parameters
-    dsource: int,  # the number of data sources
-    dcat: list[int],  # the number of categories for each categorical input
-    dnum: int,  # the dimension of the numerical input
-    dout: int,  # the dimenson of the output
-    qual_in: bool,  # whether qualitative (categorical) inputs are present
-    quant_in: bool,  # whether quantitative (numerical) inputs are present
+    # Data parameters - now from dataset meta
+    dataset_meta: dict,  # Dataset metadata dictionary containing dsource, dcat, dnum, dtargets, qual_in, quant_in
     # Architecture and block parameters
     dz_B1: int = 2,
     dz_B2: int = 2,
@@ -221,15 +257,34 @@ def Build_ProNDF(
     regularizer_strength: float = 0.1,
     # Loss weighting
     loss_weighting: bool = True,  # TODO: Maybe add more options here? ATM it's full-on heirarchical loss weighting or nothing...
-    # TODO: Add logging functionality later
+    # Logging
+    loggers: Optional[List] = [LearningRateLogger()],  # List of logger instances for tracking training metrics
 ):
     """
     Streamlined constructor for ProNDF including basic functionality. For more 
     flexibility and advanced usage, initialize the model directly using the ProNDF 
     class with appropriate config dictionaries.
-    TODO: Finish docstring
-    TODO: Decide whether to build loss handler manually or with a constructor
+    
+    Args:
+        dataset_meta: Dictionary containing dataset metadata with keys:
+            - dsource: Number of data sources
+            - dcat: List of number of categories for each categorical input (or None/empty list)
+            - dnum: Dimension of the numerical input
+            - dtargets: Dimension of the output/targets
+            - qual_in: Whether qualitative (categorical) inputs are present
+            - quant_in: Whether quantitative (numerical) inputs are present
+        Other arguments: See function signature for architecture and training parameters.
+    
+    Returns:
+        ProNDF: Configured ProNDF model instance.
     """
+    # Extract data parameters from dataset meta
+    dsource = dataset_meta['dsource']
+    dcat = dataset_meta.get('dcat', None)
+    dnum = dataset_meta.get('dnum', None)
+    dout = dataset_meta['dtargets']
+    qual_in = dataset_meta['qual_in']
+    quant_in = dataset_meta['quant_in']
     # Build configs for each model component
     # Blocks 1 and 2 types
     if probabilistic_manifolds:
@@ -343,5 +398,6 @@ def Build_ProNDF(
         loss_handler_config = loss_handler_config,
         optimizer_type = optimizer_type,
         optimizer_config = optimizer_config,
+        loggers = loggers,
     )
     return model

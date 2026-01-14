@@ -1,2 +1,3 @@
-# Rational dataset module
-
+"""
+Rational dataset generation helpers.
+"""

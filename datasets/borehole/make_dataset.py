@@ -1,3 +1,7 @@
+"""
+Generate and save the borehole dataset splits.
+"""
+
 import data
 import numpy as np
 
@@ -12,22 +16,27 @@ num_samples = [2100, 7000, 7000, 7000, 7000]
 
 # Set source functions
 def yh(cat, x):
+    """High-fidelity borehole response function."""
     Tu, Hu, Hl, r, rw, Tl, L, Kw = [x[:, i] for i in range(8)]
     Numer = 2*np.pi*Tu
     return (Numer*(Hu-Hl))/(np.log(r/rw)*(1+((2*L*Tu)/(np.log(r/rw)*(rw**2)*Kw))+(Tu/Tl)))
 def yl1(cat, x):
+    """Low-fidelity borehole response function (variant 1)."""
     Tu, Hu, Hl, r, rw, Tl, L, Kw = [x[:, i] for i in range(8)]
     Numer = 2*np.pi*Tu
     return (Numer*(Hu-0.8*Hl))/(np.log(r/rw)*(1+((1*L*Tu)/(np.log(r/rw)*(rw**2)*Kw))+(Tu/Tl)))
 def yl2(cat, x):
+    """Low-fidelity borehole response function (variant 2)."""
     Tu, Hu, Hl, r, rw, Tl, L, Kw = [x[:, i] for i in range(8)]
     Numer = 2*np.pi*Tu
     return (Numer*(Hu-3*Hl))/(np.log(r/rw)*(1+((8*L*Tu)/(np.log(r/rw)*(rw**2)*Kw))+0.75*(Tu/Tl)))
 def yl3(cat, x):
+    """Low-fidelity borehole response function (variant 3)."""
     Tu, Hu, Hl, r, rw, Tl, L, Kw = [x[:, i] for i in range(8)]
     Numer = 2*np.pi*Tu
     return (Numer*(1.1*Hu-Hl))/(np.log(4*r/rw)*(1+((3*L*Tu)/(np.log(r/rw)*(rw**2)*Kw))+(Tu/Tl)))
 def yl4(cat, x):
+    """Low-fidelity borehole response function (variant 4)."""
     Tu, Hu, Hl, r, rw, Tl, L, Kw = [x[:, i] for i in range(8)]
     Numer = 2*np.pi*Tu
     return (Numer*(1.05*Hu-Hl))/(np.log(2*r/rw)*(1+((2*L*Tu)/(np.log(r/rw)*(rw**2)*Kw))+(Tu/Tl)))

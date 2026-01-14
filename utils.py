@@ -1,5 +1,5 @@
 """
-Docstring to be added later.
+Utility functions for probabilistic modeling and math helpers.
 """
 
 import torch

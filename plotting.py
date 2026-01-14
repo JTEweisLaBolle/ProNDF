@@ -1,5 +1,5 @@
 """
-plotting.py
+Plotting utilities for ProNDF models and datasets.
 """
 
 import matplotlib.pyplot as plt
@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import itertools
 from torch.utils.data import DataLoader
-from data import to_categorical, MultiFidelityDataset
+from data import to_categorical, MultiFidelityDataset, collate_fn
 
 my_colors = [
     "red",
@@ -31,30 +31,8 @@ my_colors = [
     "darkgoldenrod",
 ]  # List of colors to be used in plots
 
-
-def _collate_fn(batch):
-    """
-    Custom collate function to stack MultiFidelityDataset dicts into batched dict format.
-    Returns a dict with keys 'source', 'cat', 'num', 'targets', each containing batched tensors.
-    """
-    source_list = []
-    cat_list = []
-    num_list = []
-    targets_list = []
-    
-    for sample in batch:
-        # Convert to tensors if needed (samples from dataset are already tensors)
-        source_list.append(sample['source'] if isinstance(sample['source'], torch.Tensor) else torch.tensor(sample['source'], dtype=torch.float32))
-        cat_list.append(sample['cat'] if isinstance(sample['cat'], torch.Tensor) else torch.tensor(sample['cat'], dtype=torch.float32))
-        num_list.append(sample['num'] if isinstance(sample['num'], torch.Tensor) else torch.tensor(sample['num'], dtype=torch.float32))
-        targets_list.append(sample['targets'] if isinstance(sample['targets'], torch.Tensor) else torch.tensor(sample['targets'], dtype=torch.float32))
-    
-    return {
-        'source': torch.stack(source_list),
-        'cat': torch.stack(cat_list),
-        'num': torch.stack(num_list),
-        'targets': torch.stack(targets_list)
-    }
+# For backward compatibility, alias the collate_fn from data module
+_collate_fn = collate_fn
 
 
 def _get_predictions(model, dataset, device, batch_size=32):
@@ -104,7 +82,7 @@ def _get_predictions(model, dataset, device, batch_size=32):
         return all_preds, None, None
 
 
-def plot_1D(model, train_dataset, val_dataset, test_dataset, scaler=None, device='cpu', batch_size=32, 
+def plot_1D(model, train_dataset, val_dataset, test_dataset, scaler=None, scaler_targets=None, device='cpu', batch_size=32, 
             source_functions=None, use_source_functions=False):
     """
     Plot predictions vs test data for 1D input/output models.
@@ -119,7 +97,11 @@ def plot_1D(model, train_dataset, val_dataset, test_dataset, scaler=None, device
         train_dataset: MultiFidelityDataset for training data
         val_dataset: MultiFidelityDataset for validation data (not used but kept for API consistency)
         test_dataset: MultiFidelityDataset for test data
-        scaler: Optional scaler object with inverse_transform method for unscaling data
+        scaler: Optional scaler object with inverse_transform method for unscaling numerical inputs (x-axis).
+            If None, inputs are not unscaled.
+        scaler_targets: Optional scaler object with inverse_transform method for unscaling targets/predictions (y-axis).
+            If None but scaler is provided, scaler will be used for both inputs and targets (backward compatibility).
+            If None and scaler is None, targets are not unscaled.
         device: Device to run model on ('cpu' or 'cuda')
         batch_size: Batch size for prediction
         source_functions: Optional list of callable functions, one per source. Each function should take
@@ -151,16 +133,38 @@ def plot_1D(model, train_dataset, val_dataset, test_dataset, scaler=None, device
     train_num = train_dataset.num if train_dataset.quant_in else None
     train_targets = train_dataset.targets
     
-    # Unscale if scaler provided
+    # Determine target scaler (use scaler_targets if provided, otherwise fall back to scaler for backward compatibility)
+    target_scaler = scaler_targets if scaler_targets is not None else scaler
+    
+    # Unscale numerical inputs (x-axis) if scaler provided
     if scaler is not None:
         test_num = scaler.inverse_transform(test_num)
-        # Only unscale test_targets if not using source functions
-        if not use_source_functions:
-            test_targets = scaler.inverse_transform(test_targets)
-        test_means = scaler.inverse_transform(test_means) if test_means is not None else None
-        test_stds = test_stds * scaler.scale_ if test_stds is not None else None
         train_num = scaler.inverse_transform(train_num)
-        train_targets = scaler.inverse_transform(train_targets)
+    
+    # Unscale targets and predictions (y-axis) if target_scaler provided
+    if target_scaler is not None:
+        # Only unscale test_targets if not using source functions (source functions return unscaled values)
+        if not use_source_functions:
+            test_targets = target_scaler.inverse_transform(test_targets)
+        # Unscale predictions
+        test_means = target_scaler.inverse_transform(test_means) if test_means is not None else None
+        # Unscale standard deviations (multiply by scale factor)
+        # The scale factor is the derivative of the inverse transform
+        if test_stds is not None:
+            # For StandardNormalizer: inverse_transform is (x * scale_) + mean_
+            # Derivative is scale_, so std_unscaled = std_scaled * scale_
+            if hasattr(target_scaler, 'with_std'):
+                # StandardNormalizer
+                test_stds = test_stds * target_scaler.scale_
+            elif hasattr(target_scaler, 'denom_'):
+                # MinMaxNormalizer: inverse_transform is ((x - min_shift_) / scale_) * denom_ + data_min_
+                # Derivative is denom_ / scale_, so std_unscaled = std_scaled * (denom_ / scale_)
+                test_stds = test_stds * (target_scaler.denom_ / target_scaler.scale_)
+            else:
+                # Fallback: try to use scale_ if it exists
+                if hasattr(target_scaler, 'scale_'):
+                    test_stds = test_stds * target_scaler.scale_
+        train_targets = target_scaler.inverse_transform(train_targets)
     
     # Generate clean targets from source functions if requested
     if use_source_functions:
@@ -289,7 +293,7 @@ def plot_1D(model, train_dataset, val_dataset, test_dataset, scaler=None, device
     return fig
 
 
-def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("red", "blue"), lw=2, s=30, figsize=7, noise_variance=None):
+def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("red", "blue"), lw=2, s=30, figsize=7):
     """
     Plot true vs predicted values for each data source.
     
@@ -302,11 +306,6 @@ def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("re
         lw: Line width for diagonal line
         s: Scatter point size
         figsize: Base figure size
-        noise_variance: Optional noise variance value(s). If provided, dashed red lines will be plotted
-            at y = x ± sqrt(noise_variance) to show the noise floor. Can be:
-            - A single scalar (same noise for all sources)
-            - A list/array of length n_sources (different noise per source)
-            - None (default, no noise floor plotted)
     
     Returns:
         matplotlib figure object
@@ -328,19 +327,6 @@ def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("re
     y_min = np.min(np.concatenate((y_true, y_pred), axis=0)[:])
     y_max = np.max(np.concatenate((y_true, y_pred), axis=0)[:])
     yy = np.linspace(y_min, y_max, num=1000)
-    
-    # Process noise_variance if provided
-    noise_std = None
-    if noise_variance is not None:
-        noise_variance = np.asarray(noise_variance)
-        if noise_variance.ndim == 0:
-            # Scalar - same noise for all sources
-            noise_std = np.sqrt(noise_variance)
-        else:
-            # Array - different noise per source
-            noise_std = np.sqrt(noise_variance)
-            if len(noise_std) != source_OH.shape[1]:
-                raise ValueError(f"noise_variance array length ({len(noise_std)}) must match number of sources ({source_OH.shape[1]})")
     
     n_sources = source_OH.shape[1]
     if n_sources == 1:
@@ -365,17 +351,6 @@ def plot_true_pred(model, test_dataset, device='cpu', batch_size=32, colors=("re
             curr_ax = ax_list[row_idx, col_idx]
         
         curr_ax.plot(yy, yy, color=colors[0], linewidth=lw, label="true = pred")
-        
-        # Plot noise floor if provided
-        if noise_std is not None:
-            if isinstance(noise_std, np.ndarray) and noise_std.ndim > 0:
-                # Per-source noise
-                curr_noise_std = noise_std[source_idx]
-            else:
-                # Scalar noise (same for all sources)
-                curr_noise_std = noise_std
-            curr_ax.plot(yy, yy + curr_noise_std, '--', color='red', linewidth=lw, alpha=0.5, label='Noise floor (+1σ)')
-            curr_ax.plot(yy, yy - curr_noise_std, '--', color='red', linewidth=lw, alpha=0.5, label='Noise floor (-1σ)')
         
         curr_ax.scatter(
             y_true[source_OH[:, source_idx] == 1, :],

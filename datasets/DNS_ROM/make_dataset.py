@@ -1,3 +1,7 @@
+"""
+Generate and save the DNS_ROM dataset splits.
+"""
+
 import sys
 import os
 import numpy as np

@@ -55,13 +55,17 @@ class DatasetMeta(TypedDict, total=False):
 
 class MultiFidelityDataset(Dataset):
     """
-    # NOTE: Add docstring later. For now, let's list intended behaviors:
-    # NOTE: Write plotting code to take dataset objects as inputs
-    - Init should take in each piece of data (num, cat, source, out), and metadata dict (too much abstraction?)
-    - Needs to have __len__ manually defined, as wel as __getitem__
-    - Assumes any data processing (e.g., scaling, normalization, etc.) has already been done prior to init
-    Potential additional methods:
-    - save and load
+    PyTorch Dataset for multi-fidelity data with optional categorical and numerical inputs.
+    
+    This dataset stores one-hot source indicators, optional categorical inputs, optional
+    numerical inputs, and target outputs, along with metadata describing dimensions.
+    
+    Args:
+        source: Array of one-hot encoded source indicators with shape (n_samples, dsource).
+        cat: Optional categorical inputs with shape (n_samples, sum(dcat)).
+        num: Optional numerical inputs with shape (n_samples, dnum).
+        targets: Target outputs with shape (n_samples, dtargets).
+        meta: Metadata dictionary describing dataset dimensions and properties.
     """
     def __init__(
             self,
@@ -466,6 +470,55 @@ def load_splits(
     test_dataset = MultiFidelityDataset.load(folder_path, f"{filename}_test")
     
     return train_dataset, val_dataset, test_dataset
+
+
+def collate_fn(batch):
+    """
+    Custom collate function for MultiFidelityDataset to stack dictionary samples into batched format.
+    
+    This function takes a list of sample dictionaries (one per sample) and converts them into
+    a single batched dictionary with stacked tensors. This is required when using PyTorch's
+    DataLoader with MultiFidelityDataset, which returns dictionaries.
+    
+    Args:
+        batch: List of sample dictionaries, where each dictionary has keys:
+            - 'source': tensor of shape (dsource,)
+            - 'cat': tensor of shape (sum(dcat),) or empty tensor
+            - 'num': tensor of shape (dnum,) or empty tensor
+            - 'targets': tensor of shape (dtargets,)
+    
+    Returns:
+        Dictionary with batched tensors:
+            - 'source': tensor of shape (batch_size, dsource)
+            - 'cat': tensor of shape (batch_size, sum(dcat)) or (batch_size, 0)
+            - 'num': tensor of shape (batch_size, dnum) or (batch_size, 0)
+            - 'targets': tensor of shape (batch_size, dtargets)
+    
+    Example:
+        >>> from torch.utils.data import DataLoader
+        >>> from data import MultiFidelityDataset, collate_fn
+        >>> 
+        >>> dataset = MultiFidelityDataset(...)
+        >>> dataloader = DataLoader(dataset, batch_size=32, collate_fn=collate_fn)
+    """
+    source_list = []
+    cat_list = []
+    num_list = []
+    targets_list = []
+    
+    for sample in batch:
+        # Convert to tensors if needed (samples from dataset are already tensors)
+        source_list.append(sample['source'] if isinstance(sample['source'], torch.Tensor) else torch.tensor(sample['source'], dtype=torch.float32))
+        cat_list.append(sample['cat'] if isinstance(sample['cat'], torch.Tensor) else torch.tensor(sample['cat'], dtype=torch.float32))
+        num_list.append(sample['num'] if isinstance(sample['num'], torch.Tensor) else torch.tensor(sample['num'], dtype=torch.float32))
+        targets_list.append(sample['targets'] if isinstance(sample['targets'], torch.Tensor) else torch.tensor(sample['targets'], dtype=torch.float32))
+    
+    return {
+        'source': torch.stack(source_list),
+        'cat': torch.stack(cat_list),
+        'num': torch.stack(num_list),
+        'targets': torch.stack(targets_list)
+    }
 
 
 # Functions and classes dealing with normalizing/scaling or otherwise preprocessing data
