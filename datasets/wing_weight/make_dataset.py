@@ -2,11 +2,15 @@
 Generate and save the wing weight dataset splits.
 """
 
-import data
+import os
+import sys
 import numpy as np
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+from prondf import data
+
 # Set save path
-save_path = "datasets/wing_weight/"
+save_path = "datasets/wing_weight/generated_data/"
 
 # Set seed
 np.random.seed(42)

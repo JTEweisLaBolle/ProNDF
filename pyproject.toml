@@ -1,0 +1,24 @@
+[project]
+name = "prondf"
+version = "0.1.0"
+description = "Probabilistic Neural Data Fusion (refactored)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "scipy",
+  "matplotlib",
+  "torch",
+  "pytorch-lightning",
+  "dill",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

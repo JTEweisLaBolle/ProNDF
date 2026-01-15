@@ -1,0 +1,13 @@
+# Generated dataset artifacts
+datasets/*/generated_data/
+
+# Training / experiment logs (anywhere)
+lightning_logs/
+**/lightning_logs/
+logs/
+**/logs/
+
+# Python noise
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/

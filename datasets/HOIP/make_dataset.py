@@ -6,13 +6,13 @@ import sys
 import os
 import numpy as np
 
-# Add parent directory to path to import data module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-import data
+# Add src directory to path to import package
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+from prondf import data
 import dill
 
 # Set save path (relative to project root)
-save_path = "datasets/HOIP/"
+save_path = "datasets/HOIP/generated_data/"
 
 # Get the directory where this script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))

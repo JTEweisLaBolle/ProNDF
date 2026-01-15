@@ -2,11 +2,15 @@
 Generate and save the rational function dataset splits.
 """
 
-import data
+import os
+import sys
 import numpy as np
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+from prondf import data
+
 # Set save path
-save_path = "datasets/rational/"
+save_path = "datasets/rational/generated_data/"
 
 # Set seed
 np.random.seed(42)
