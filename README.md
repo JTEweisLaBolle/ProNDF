@@ -1,5 +1,6 @@
 # ProNDF
 > Probabilistic Neural Data Fusion
+
 This repo is a refactor and extension of Pro-NDF, a method I helped develop during my Ph.D.
 
 
