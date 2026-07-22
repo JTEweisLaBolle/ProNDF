@@ -102,3 +102,5 @@ If you use this code or the original Pro-NDF methodology, please cite:
 ## Acknowledgements
 This refactor is based on the Pro-NDF architecture in the original paper and
 extends it for improved robustness and flexibility for research workflows.
+
+This README draft was authored by Claude.
