@@ -87,14 +87,6 @@ Expected dependencies include:
 - `torch`, `pytorch_lightning`
 - `numpy`, `scipy`, `matplotlib`
 
-If you want a formal install process, I can add a `pyproject.toml` or
-`requirements.txt`.
-
-## License
-No license is currently specified. Standard practice for research portfolios is
-to choose a permissive license (e.g., MIT or BSD-3-Clause). If you want, I can
-add one and include a `LICENSE` file.
-
 ## Citation
 If you use this code or the original Pro-NDF methodology, please cite:
 
